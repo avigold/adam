@@ -1,0 +1,50 @@
+Review the following code for security vulnerabilities.
+
+File: {{ file_path }}
+{% if file_type %}
+File type: {{ file_type }}
+{% endif %}
+
+```
+{{ file_content }}
+```
+
+{% if file_type == "handler" or file_type == "route" %}
+## Focus: HTTP Handler
+- Input validation on all request parameters
+- Output encoding to prevent XSS
+- Authentication/authorization checks
+- CSRF protection if stateful
+- Rate limiting considerations
+{% elif file_type == "model" or file_type == "database" %}
+## Focus: Data Layer
+- SQL injection (parameterized queries, not string concatenation)
+- Mass assignment (only expected fields accepted)
+- Sensitive data exposure (passwords hashed, tokens not logged)
+{% elif file_type == "config" %}
+## Focus: Configuration
+- Secrets not hardcoded (use environment variables)
+- Debug mode not enabled by default
+- Secure defaults (HTTPS, strict CORS)
+{% else %}
+## General Review
+- Injection risks (SQL, command, template)
+- Exposed secrets or credentials
+- Missing input validation at system boundaries
+- Insecure cryptography
+- Path traversal
+- Error messages that leak internal details
+{% endif %}
+
+## What NOT to flag
+- Internal utility functions with no user-facing input do not have injection risks.
+- Code that calls a well-tested library function does not need to re-validate what the library validates.
+- Theoretical risks that require an attacker to already have code execution are not useful findings.
+
+Respond with JSON:
+{
+  "score": 0.0-1.0,
+  "vulnerabilities": [{"type": "...", "severity": "critical|high|medium|low", "location": "...", "description": "..."}],
+  "diagnosis": "brief overall assessment",
+  "repair_suggestions": ["specific actionable suggestions"]
+}

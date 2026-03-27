@@ -1,0 +1,45 @@
+## File Under Test
+
+**Path**: {{ file_path }}
+**Purpose**: {{ file_purpose }}
+
+{% if source_code %}
+## Source Code
+```
+{{ source_code }}
+```
+{% endif %}
+
+{% if interface_spec %}
+## Interface Specification
+{% for key, value in interface_spec.items() %}
+- {{ key }}: {{ value }}
+{% endfor %}
+{% endif %}
+
+{% if module_name %}
+## Module: {{ module_name }}
+{% endif %}
+
+{% if tech_stack %}
+## Tech Stack
+{% for key, value in tech_stack.items() %}
+- {{ key }}: {{ value }}
+{% endfor %}
+{% endif %}
+
+{% if test_runner %}
+## Test Runner: {{ test_runner }}
+{% endif %}
+
+## Instructions
+
+Write comprehensive tests for this file. Cover:
+- Happy path for each public function/method
+- Edge cases (empty input, boundary values, None/null)
+- Error cases (invalid input, expected exceptions)
+- Integration between related functions if applicable
+
+Test behaviour, not implementation details. Use descriptive test names. Keep tests independent.
+
+Output ONLY the test file contents. No markdown fences, no explanation.

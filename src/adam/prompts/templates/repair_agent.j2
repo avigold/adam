@@ -1,0 +1,56 @@
+## Diagnosis
+
+{{ diagnosis }}
+
+## Repair Instruction
+
+{{ instruction }}
+
+## Current Source Code
+
+```
+{{ source_code }}
+```
+
+{% if error_output %}
+## Error Output
+
+```
+{{ error_output }}
+```
+{% endif %}
+
+{% if related_files %}
+## Related Files (may contain the actual source of the problem)
+{% for rf in related_files %}
+### {{ rf.path }}
+```
+{{ rf.content }}
+```
+{% endfor %}
+{% endif %}
+
+{% if preserve_constraints %}
+## You MUST Preserve
+{% for constraint in preserve_constraints %}
+- {{ constraint }}
+{% endfor %}
+{% endif %}
+
+{% if banned_interventions %}
+## You MUST NOT
+{% for ban in banned_interventions %}
+- {{ ban }}
+{% endfor %}
+{% endif %}
+
+## Principles
+
+- Fix ONLY what is broken. Do not refactor surrounding code.
+- If the error is an import path or module name, verify the actual file exists at that path before guessing.
+- If the root cause is in a different file (e.g., wrong export, missing function), fix what you can in THIS file and note that the other file also needs changes — a separate agent handles that.
+- Do not suppress errors with bare except or empty catch blocks.
+- Do not change function signatures unless the diagnosis specifically requires it.
+- A fix that changes the least code is the best fix.
+
+Return the complete corrected file. No markdown fences, no explanation.

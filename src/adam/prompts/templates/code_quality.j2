@@ -1,0 +1,46 @@
+Evaluate the following {{ language }} code for quality.
+
+File: {{ file_path }}
+
+```
+{{ file_content }}
+```
+
+{% if conventions %}
+## Project Conventions
+{% for key, value in conventions.items() %}
+- {{ key }}: {{ value }}
+{% endfor %}
+{% endif %}
+
+## Evaluation Criteria
+
+**Readability** (0.0-1.0):
+- Can a competent engineer understand the intent without comments?
+- Are names accurate and specific (not vague like "data", "info", "handler")?
+- Is the control flow straightforward or unnecessarily nested?
+
+**Maintainability** (0.0-1.0):
+- Does each function/class have a single clear responsibility?
+- Are dependencies explicit (no hidden global state)?
+- Could you change one part without understanding the whole file?
+
+**Idiomaticity** (0.0-1.0):
+- Does the code use language features appropriately (not fighting the language)?
+- Are standard library solutions used where they exist?
+- Does the code avoid reimplementing what the ecosystem provides?
+
+## What NOT to flag
+- Do not penalize concise code for being concise.
+- Do not require docstrings on obvious functions.
+- Do not require type annotations beyond what the project conventions specify.
+- Do not flag stylistic preferences (tabs vs spaces, trailing commas) — the linter handles that.
+
+Respond with JSON:
+{
+  "readability": 0.0-1.0,
+  "maintainability": 0.0-1.0,
+  "idiomaticity": 0.0-1.0,
+  "diagnosis": "brief overall assessment",
+  "repair_suggestions": ["specific actionable suggestions"]
+}

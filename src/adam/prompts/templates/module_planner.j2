@@ -1,0 +1,63 @@
+## Project
+
+{{ project_description }}
+
+## Tech Stack
+{% for key, value in tech_stack.items() %}
+- **{{ key }}**: {{ value }}
+{% endfor %}
+
+{% if architecture %}
+## Architecture
+{% for key, value in architecture.items() %}
+- **{{ key }}**: {{ value }}
+{% endfor %}
+{% endif %}
+
+{% if conventions %}
+## Conventions
+{% for key, value in conventions.items() %}
+- **{{ key }}**: {{ value }}
+{% endfor %}
+{% endif %}
+
+## Module to Decompose
+
+**Name**: {{ module_name }}
+**Purpose**: {{ module_purpose }}
+{% if module_dependencies %}
+**Depends on modules**: {{ module_dependencies | join(', ') }}
+{% endif %}
+
+{% if all_modules %}
+## All Modules in Project
+{% for mod in all_modules %}
+- **{{ mod.name }}**: {{ mod.purpose }} [{{ mod.status }}]
+{% endfor %}
+{% endif %}
+
+## Your Task
+
+Decompose this module into individual files. For each file, provide:
+
+- **path**: Full file path from project root
+- **purpose**: One sentence explaining what this file does
+- **language**: Programming language
+- **interface_spec**: Public exports — classes with key methods, functions with signatures, constants
+- **dependencies**: Paths of other files this file imports from
+- **test_needed**: Whether this file needs its own test file
+- **implements**: Which project features/requirements this file fulfills (use the exact wording from the spec/features list if available). A file that implements no user-facing feature gets an empty list.
+- **notes**: Any implementation guidance
+
+{% if obligations %}
+## Features to Implement
+{% for ob in obligations %}
+- {{ ob }}
+{% endfor %}
+{% endif %}
+
+Also provide:
+- **implementation_order**: File paths in dependency order (implement these sequentially)
+- **test_strategy**: How to test this module (test runner command, fixtures needed)
+
+Keep files focused. One responsibility per file. Don't create files that don't need to exist.

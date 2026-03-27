@@ -1,0 +1,87 @@
+## File to Implement
+
+**Path**: {{ file_path }}
+**Purpose**: {{ file_purpose }}
+**Language**: {{ file_language }}
+
+{% if interface_spec %}
+## Interface Specification (what this file must export)
+{% for key, value in interface_spec.items() %}
+{% if value is iterable and value is not string %}
+{{ key }}:
+{% for item in value %}
+  - {{ item }}
+{% endfor %}
+{% else %}
+{{ key }}: {{ value }}
+{% endif %}
+{% endfor %}
+{% endif %}
+
+{% if module_name %}
+## Module: {{ module_name }}
+Purpose: {{ module_purpose }}
+{% endif %}
+
+{% if dependency_interfaces %}
+## Dependencies (files this imports from)
+{% for dep in dependency_interfaces %}
+### {{ dep.path }}
+{% if dep.content %}
+```
+{{ dep.content }}
+```
+{% elif dep.interface_spec %}
+{% for key, value in dep.interface_spec.items() %}
+  {{ key }}: {{ value }}
+{% endfor %}
+{% endif %}
+{% endfor %}
+{% endif %}
+
+{% if related_files %}
+## Related Files (for style reference)
+{% for rf in related_files %}
+### {{ rf.path }}
+Purpose: {{ rf.purpose }}
+{% if rf.content %}
+```
+{{ rf.content }}
+```
+{% endif %}
+{% endfor %}
+{% endif %}
+
+{% if tech_stack %}
+## Tech Stack
+{% for key, value in tech_stack.items() %}
+- {{ key }}: {{ value }}
+{% endfor %}
+{% endif %}
+
+{% if conventions %}
+## Conventions
+{% for key, value in conventions.items() %}
+- {{ key }}: {{ value }}
+{% endfor %}
+{% endif %}
+
+{% if available_assets %}
+## Available Assets (in public/assets/)
+{{ available_assets }}
+{% endif %}
+
+## Principles
+
+- Write the complete file. No placeholders, no TODOs, no "implement this later."
+- Do not add features, parameters, or abstractions not in the specification.
+- Import only what you use. Do not add speculative imports.
+- Do not create wrapper types around language built-ins.
+- Do not add comments that restate what the code does. Only comment why, when the why is non-obvious.
+- Validate inputs at system boundaries (user input, network, file I/O). Trust internal callers.
+- Choose the simplest data structure that works. Array before tree. Dict before class. Variable before config file.
+- Handle errors where you can do something about them. Let them propagate where you can't.
+- Three lines of clear, similar code is better than a premature abstraction.
+- If a function does one thing and its name says what that thing is, it's long enough.
+
+Output ONLY the file contents. No markdown fences, no explanation.

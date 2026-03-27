@@ -1,0 +1,37 @@
+## Project
+
+{{ project_description }}
+
+{% if tech_stack %}
+## Tech Stack
+{% for key, value in tech_stack.items() %}
+- {{ key }}: {{ value }}
+{% endfor %}
+{% endif %}
+
+{% if routing_files %}
+## Routing Files
+
+{% for rf in routing_files %}
+### {{ rf.path }}
+```
+{{ rf.content }}
+```
+
+{% endfor %}
+{% endif %}
+
+## Task
+
+Identify all user-facing routes/pages in this application. For each route:
+- **path**: URL path (e.g., "/", "/about", "/users")
+- **name**: Short name for the screenshot file
+- **description**: What this page shows
+- **needs_auth**: Whether login is required
+- **needs_data**: Whether seed data is needed to look meaningful
+- **actions**: Pre-screenshot actions (e.g., [{"type": "click", "selector": "#tab-2"}])
+
+Focus on distinct visual states. Include the home page and key feature pages.
+Skip API-only routes.
+
+Respond with JSON: {"routes": [...], "framework": "...", "notes": "..."}

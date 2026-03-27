@@ -1,0 +1,42 @@
+## Error Output
+
+```
+{{ error_output }}
+```
+
+{% if file_path %}
+## File: {{ file_path }}
+{% endif %}
+
+{% if test_results %}
+## Test Results
+{% for tr in test_results %}
+- {{ tr.test | default('unknown') }}: {{ tr.status | default('?') }}
+{% if tr.output %}
+  ```
+  {{ tr.output }}
+  ```
+{% endif %}
+{% endfor %}
+{% endif %}
+
+{% if related_files %}
+## Related Source Files
+{% for rf in related_files %}
+### {{ rf.path }}
+{% if rf.content %}
+```
+{{ rf.content }}
+```
+{% endif %}
+{% endfor %}
+{% endif %}
+
+## Instructions
+
+Diagnose the root cause. Respond with:
+- **root_cause**: What specifically is wrong
+- **category**: One of: syntax_error, logic_error, missing_dependency, type_error, import_error, runtime_error, test_assertion, configuration_error, other
+- **affected_files**: Which file paths need changes
+- **proposed_fix**: Specific description of what to change
+- **confidence**: 0.0-1.0 in your diagnosis

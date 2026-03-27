@@ -1,0 +1,49 @@
+Review the following code for performance issues.
+
+File: {{ file_path }}
+{% if file_type %}
+File type: {{ file_type }}
+{% endif %}
+
+```
+{{ file_content }}
+```
+
+{% if file_type == "handler" or file_type == "route" %}
+## Focus: Request Path
+- Database queries per request (N+1?)
+- Unbounded result sets (missing LIMIT/pagination?)
+- Blocking I/O in async handler
+- Response body size
+{% elif file_type == "model" or file_type == "database" %}
+## Focus: Data Access
+- Missing indexes on queried columns
+- Eager loading where lazy would suffice (or vice versa)
+- Unnecessary data fetched (SELECT * vs specific columns)
+{% elif file_type == "utility" %}
+## Focus: Hot Path Potential
+- Algorithmic complexity (O(n²) where O(n) or O(n log n) is possible)
+- Unnecessary allocations in tight loops
+- String concatenation in loops (use join/builder)
+{% else %}
+## General Review
+- Algorithmic efficiency (quadratic where linear is possible)
+- Unnecessary re-computation (cache or memoize repeated work)
+- Unbounded loops or recursion
+- Memory leaks (unclosed resources, growing collections)
+- Blocking I/O in async context
+{% endif %}
+
+## What NOT to flag
+- Code that runs once at startup does not need optimization.
+- Micro-optimizations (using `map` vs list comprehension) are not performance issues.
+- Code that processes small, bounded datasets does not need pagination.
+- Premature optimization suggestions are worse than the problem they claim to solve.
+
+Respond with JSON:
+{
+  "score": 0.0-1.0,
+  "issues": [{"type": "...", "severity": "critical|high|medium|low", "description": "..."}],
+  "diagnosis": "brief overall assessment",
+  "repair_suggestions": ["specific actionable suggestions"]
+}
