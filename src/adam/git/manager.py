@@ -94,8 +94,12 @@ class GitManager:
                 message="Nothing to commit",
             )
 
-        # Escape the message for shell
-        safe_msg = message.replace("'", "'\\''")
+        # Append co-author tag
+        full_msg = (
+            f"{message}\n\n"
+            "Co-Authored-By: Adam <adam@meetadam.app>"
+        )
+        safe_msg = full_msg.replace("'", "'\\''")
         result = await self._run(f"git commit -m '{safe_msg}'")
 
         if not result.success:

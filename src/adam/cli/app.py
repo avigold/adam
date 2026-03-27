@@ -182,6 +182,52 @@ async def _handle_existing(
             update_phase(project_dir, "implementing")
             state.phase = "implementing"
 
+        # Re-scaffold if it failed on the previous run
+        if not state.scaffold_complete:
+            show_info("Scaffold incomplete — re-running scaffolder...")
+            from adam.orchestrator.planner import PlanningOrchestrator
+            planner = PlanningOrchestrator(
+                llm, session, project_root=str(project_dir),
+            )
+            from adam.store.store import ProjectStore  # noqa: E402
+            project = await ProjectStore(session).get_project(
+                uuid.UUID(state.project_id)
+            )
+            if project:
+                from adam.agents.architect import ArchitectureResponse
+                arch_data = ArchitectureResponse(
+                    tech_stack=project.tech_stack,
+                    modules=[],
+                    conventions=project.conventions,
+                    build_system=project.architecture.get("build_system", {}),
+                    architecture_decisions=project.architecture.get("decisions", []),
+                )
+                scaffold_ok = await planner._scaffold(
+                    uuid.UUID(state.project_id), arch_data,
+                )
+                if scaffold_ok:
+                    # Copy assets if context has them
+                    ctx_dir = project_dir / "context"
+                    if ctx_dir.is_dir():
+                        from adam.context.loader import ContextLoader
+                        loader = ContextLoader(ctx_dir)
+                        loader.load()
+                        if loader.assets.assets:
+                            planner._copy_assets(loader.assets)
+
+                    # Install dependencies
+                    dep_mgr = DependencyManager(project_dir)
+                    pm = dep_mgr.detect_package_manager()
+                    if pm and not await dep_mgr.check_installed():
+                        show_info(f"Installing dependencies with {pm.name}...")
+                        await dep_mgr.install()
+
+                    state.scaffold_complete = True
+                    save_project(project_dir, state)
+                    show_info("Scaffold complete")
+                else:
+                    show_info("[yellow]Scaffold still failed[/yellow]")
+
         if state.phase in ("implementing", "testing", "revise"):
             show_phase("Implementation")
             policy = ImplementationPolicy(
@@ -272,6 +318,12 @@ async def _handle_new(
             asset_manifest=loader.assets,
         )
 
+        # Check if scaffold produced config files
+        scaffold_ok = any(
+            (project_dir / f).exists()
+            for f in ("package.json", "pyproject.toml", "Cargo.toml", "go.mod")
+        )
+
         # Save project state
         state = ProjectState(
             project_id=str(project_id),
@@ -279,6 +331,7 @@ async def _handle_new(
             title=brief.get("title", "Untitled"),
             tech_stack=brief.get("tech_stack", {}),
             root_path=str(project_dir),
+            scaffold_complete=scaffold_ok,
         )
         save_project(project_dir, state)
 

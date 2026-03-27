@@ -25,7 +25,7 @@ class DiscoveredRoute(BaseModel):
     description: str = ""
     needs_auth: bool = False
     needs_data: bool = False  # Needs seed data to look meaningful
-    actions: list[dict[str, str]] = []  # Pre-screenshot actions
+    actions: list[dict[str, Any]] = []  # Pre-screenshot actions
 
 
 class RouteDiscoveryResponse(BaseModel):

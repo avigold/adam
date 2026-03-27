@@ -51,7 +51,7 @@ class Screenshotter:
         try:
             from playwright.async_api import async_playwright
         except ImportError:
-            logger.error("Playwright not installed. Run: playwright install chromium")
+            logger.error("Playwright not installed. Run: pip install playwright")
             return [
                 ScreenshotResult(
                     page_name=p.name or p.url,
@@ -64,7 +64,17 @@ class Screenshotter:
             ]
 
         async with async_playwright() as pw:
-            browser = await pw.chromium.launch(headless=True)
+            try:
+                browser = await pw.chromium.launch(headless=True)
+            except Exception:
+                # Chromium not downloaded — install it
+                logger.info("Installing Chromium for visual inspection...")
+                import subprocess
+                subprocess.run(
+                    ["playwright", "install", "chromium"],
+                    capture_output=True,
+                )
+                browser = await pw.chromium.launch(headless=True)
 
             try:
                 for page_spec in pages:

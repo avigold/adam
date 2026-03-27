@@ -22,6 +22,7 @@ class ProjectState:
     title: str = ""
     tech_stack: dict = field(default_factory=dict)
     root_path: str = "."
+    scaffold_complete: bool = False
 
 
 def detect_project(project_dir: Path) -> ProjectState | None:
@@ -55,4 +56,12 @@ def update_phase(project_dir: Path, phase: str) -> None:
     state = detect_project(project_dir)
     if state:
         state.phase = phase
+        save_project(project_dir, state)
+
+
+def update_scaffold_status(project_dir: Path, complete: bool) -> None:
+    """Mark scaffolding as complete or incomplete."""
+    state = detect_project(project_dir)
+    if state:
+        state.scaffold_complete = complete
         save_project(project_dir, state)

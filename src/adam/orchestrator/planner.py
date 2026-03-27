@@ -193,7 +193,7 @@ class PlanningOrchestrator:
 
         # Step 6: Scaffold project on disk
         logger.info("Scaffolding project...")
-        await self._scaffold(project_id, arch_data)
+        scaffold_ok = await self._scaffold(project_id, arch_data)
 
         # Step 7: Copy assets to project directory
         if asset_manifest and asset_manifest.assets:
@@ -248,7 +248,7 @@ class PlanningOrchestrator:
                 (Path(self._project_root) / m.name).mkdir(
                     parents=True, exist_ok=True,
                 )
-            return
+            return False
 
         scaffold = result.parsed
         root = Path(self._project_root)
@@ -264,6 +264,8 @@ class PlanningOrchestrator:
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(sf.content, encoding="utf-8")
             logger.info("Scaffolded: %s", sf.path)
+
+        return True
 
     def _copy_assets(self, manifest: AssetManifest) -> None:
         """Copy binary assets from context/assets/ to the project directory."""
