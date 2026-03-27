@@ -193,7 +193,7 @@ class PlanningOrchestrator:
 
         # Step 6: Scaffold project on disk
         logger.info("Scaffolding project...")
-        scaffold_ok = await self._scaffold(project_id, arch_data)
+        await self._scaffold(project_id, arch_data)
 
         # Step 7: Copy assets to project directory
         if asset_manifest and asset_manifest.assets:

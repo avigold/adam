@@ -97,10 +97,25 @@ class Orchestrator:
         logger.info("Starting implementation for: %s", project.title)
 
         build_sys = project.architecture.get("build_system", {})
-        test_cmd = build_sys.get("test_runner", "")
-        lint_cmd = build_sys.get("linter", "")
-        type_cmd = build_sys.get("type_checker", "")
-        build_cmd = build_sys.get("build", "")
+        # Handle both flat and nested command structures
+        commands = build_sys.get("commands", build_sys)
+        test_cmd = (
+            commands.get("test", "")
+            or build_sys.get("test_runner", "")
+        )
+        lint_cmd = (
+            commands.get("lint", "")
+            or commands.get("type_check", "")
+            or build_sys.get("linter", "")
+        )
+        type_cmd = (
+            commands.get("type_check", "")
+            or build_sys.get("type_checker", "")
+        )
+        build_cmd = (
+            commands.get("build", "")
+            or build_sys.get("build", "")
+        )
 
         file_loop = FileLoop(
             llm=self._llm,
@@ -131,6 +146,39 @@ class Orchestrator:
                 project = await self._store.get_project_full(project_id)
                 if project is None:
                     break
+
+            # ----------------------------------------------------------
+            # Build repair (fix compiler errors FIRST, before anything else)
+            # ----------------------------------------------------------
+            # Run build repair if there are already written files
+            # (resume or revision — either way, try building first)
+            has_written_files = any(
+                f.status == "written"
+                for m in project.modules
+                for f in m.files
+            )
+            if build_cmd and has_written_files:
+                logger.info("Running build repair before revision sweep...")
+                build_ok = await self._run_build_repair_loop(
+                    project_id, build_cmd, file_loop,
+                )
+                if build_ok:
+                    # Build passes — pending files were fixed by repair,
+                    # not by re-implementation. Mark them written.
+                    project = await self._store.get_project_full(project_id)
+                    if project:
+                        for module in project.modules:
+                            for f in module.files:
+                                if f.status == "pending":
+                                    fp = Path(self._project_root) / f.path
+                                    if fp.exists():
+                                        await self._store.update_file(
+                                            project_id, f.id,
+                                            status="written",
+                                        )
+                        logger.info(
+                            "Build passes — skipping re-implementation"
+                        )
 
             # ----------------------------------------------------------
             # Sweep: implement all pending files
@@ -295,9 +343,18 @@ class Orchestrator:
             all_results = pass_results
 
             # ----------------------------------------------------------
-            # Integration audit
+            # Build repair (also after first pass sweep)
             # ----------------------------------------------------------
             all_accepted = all(r.accepted for r in all_results)
+
+            if all_accepted and build_cmd:
+                await self._run_build_repair_loop(
+                    project_id, build_cmd, file_loop,
+                )
+
+            # ----------------------------------------------------------
+            # Integration audit
+            # ----------------------------------------------------------
             files_to_revise: list[str] = []
 
             if all_accepted and total_files > 1:
@@ -489,6 +546,140 @@ class Orchestrator:
                     marked += 1
                     logger.debug("Marked for revision: %s", file_rec.path)
         return marked
+
+    async def _run_build_repair_loop(
+        self,
+        project_id: uuid.UUID,
+        build_cmd: str,
+        file_loop: FileLoop,
+        max_rounds: int = 5,
+    ) -> bool:
+        """Run build, parse errors, repair affected files, repeat.
+
+        Returns True if the build passes, False if max rounds exhausted.
+        """
+        from adam.agents.repair_agent import RepairAgent, RepairSpec
+
+        for round_num in range(max_rounds):
+            logger.info(
+                "Build check (round %d/%d)...", round_num + 1, max_rounds
+            )
+            build_result = await self._runner.run_build(
+                build_cmd, cwd=self._project_root,
+            )
+
+            if build_result.success:
+                logger.info("Build passes!")
+                return True
+
+            # Parse errors to find affected files
+            errors = build_result.output
+            logger.warning(
+                "Build failed (round %d). Errors:\n%s",
+                round_num + 1, errors[:2000],
+            )
+
+            # Extract file paths from error output
+            # TypeScript errors look like: src/foo/bar.ts(12,5): error TS2345: ...
+            # or: src/foo/bar.ts:12:5 - error TS2345: ...
+            import re
+            error_files: dict[str, list[str]] = {}
+            for match in re.finditer(
+                r"(src/[^\s:(]+\.ts)[:(]", errors
+            ):
+                fpath = match.group(1)
+                # Collect error lines for this file
+                if fpath not in error_files:
+                    error_files[fpath] = []
+
+            if not error_files:
+                # Can't parse which files have errors — try generic repair
+                logger.warning(
+                    "Could not parse file paths from build errors"
+                )
+                break
+
+            logger.info(
+                "Build errors in %d file(s): %s",
+                len(error_files),
+                ", ".join(list(error_files.keys())[:10]),
+            )
+
+            # Repair each file with build errors
+            files_fixed = 0
+            for fpath in error_files:
+                full_path = Path(self._project_root) / fpath
+                if not full_path.exists():
+                    continue
+
+                source = full_path.read_text(encoding="utf-8")
+
+                # Get file-specific errors
+                file_errors = []
+                for line in errors.split("\n"):
+                    if fpath in line:
+                        file_errors.append(line.strip())
+                file_error_text = "\n".join(file_errors[:20])
+
+                repair_spec = RepairSpec(
+                    instruction=(
+                        "Fix the build/compilation errors in "
+                        f"this file:\n{file_error_text}"
+                    ),
+                    diagnosis=(
+                        "TypeScript build failed. "
+                        f"Errors:\n{file_error_text}"
+                    ),
+                )
+
+                # Read related files for context
+                related = file_loop._read_related_files(
+                    AgentContext(
+                        dependency_interfaces=[],
+                        related_files=[],
+                    )
+                )
+
+                repair_ctx = AgentContext(
+                    project_id=str(project_id),
+                    file_spec={"path": fpath},
+                    error_output=file_error_text,
+                    related_files=related,
+                )
+
+                repairer = RepairAgent(
+                    self._llm,
+                    source_code=source,
+                    repair_spec=repair_spec,
+                )
+                result = await repairer.execute(repair_ctx)
+
+                if result.success and result.raw_response.strip():
+                    full_path.write_text(
+                        result.raw_response, encoding="utf-8"
+                    )
+                    files_fixed += 1
+                    logger.info("Build-repaired: %s", fpath)
+                else:
+                    logger.warning(
+                        "Build repair failed for %s: %s",
+                        fpath, result.error,
+                    )
+
+            if files_fixed == 0:
+                logger.warning("No files could be repaired. Stopping.")
+                break
+
+        # Final check
+        final = await self._runner.run_build(
+            build_cmd, cwd=self._project_root,
+        )
+        if final.success:
+            logger.info("Build passes after repair!")
+            return True
+
+        logger.warning("Build still failing after %d repair rounds", max_rounds)
+        return False
 
     async def _run_integration_audit(
         self,

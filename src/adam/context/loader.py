@@ -92,7 +92,24 @@ class AssetManifest:
         """Human-readable summary for including in agent prompts."""
         if not self.assets:
             return "No assets available."
-        lines = [f"{len(self.assets)} asset(s) available:"]
+
+        images = self.image_assets
+        audio = self.audio_assets
+
+        lines = [
+            f"{len(self.assets)} asset(s) available in public/assets/.",
+            "These are INDIVIDUAL files (not a sprite atlas or sprite sheet).",
+            "Load each file separately by its filename.",
+        ]
+
+        if images:
+            extensions = {a.filename.rsplit(".", 1)[-1] for a in images}
+            lines.append(
+                f"  Images: {len(images)} files ({', '.join(sorted(extensions))} format)"
+            )
+        if audio:
+            lines.append(f"  Audio: {len(audio)} files")
+
         for dirname, files in sorted(self.by_directory.items()):
             label = dirname or "(root)"
             lines.append(f"  {label}/ ({len(files)} files)")
