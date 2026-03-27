@@ -229,6 +229,14 @@ All state lives in `.adam/` in the project directory:
 
 The log file captures every prompt sent, every response received, every validation result, and every repair attempt. If something goes wrong, the diagnosis is in the log.
 
+## Examples
+
+### Balagan — Tower Defense Game
+
+The [`examples/balagan-tower-defense/`](examples/balagan-tower-defense/) directory contains the exact spec files used to generate a complete browser-based tower defense game: 130 TypeScript files, 11 modules, PixiJS rendering, adaptive enemy AI. See the [playable demo](https://meetadam.app/play).
+
+The two context files — a game design document and a tech stack preference — demonstrate how to write specs that are precise where it matters and flexible where it doesn't.
+
 ## Development
 
 ```bash
