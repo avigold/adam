@@ -712,87 +712,112 @@ class Orchestrator:
         full_errors: str,
         error_files: dict[str, list[str]],
     ) -> int:
-        """Opus sees all errors and all affected files at once.
+        """Opus fixes files one at a time but sees ALL errors.
 
-        Produces a coordinated fix plan that doesn't oscillate.
-        Returns the file contents for each file as a JSON response.
+        Like a senior dev who reads the full build log first, then
+        fixes each file knowing the whole picture. Doesn't introduce
+        new mismatches because it understands what other files expect.
         """
-        # Read all affected source files
-        file_contents: dict[str, str] = {}
-        for fpath in error_files:
-            full_path = Path(self._project_root) / fpath
-            if full_path.exists():
-                content = full_path.read_text(encoding="utf-8")
-                if len(content) > 5000:
-                    content = content[:5000] + "\n[truncated]"
-                file_contents[fpath] = content
-
-        if not file_contents:
-            return 0
-
-        # Build prompt with ALL errors and ALL affected files
-        # Use a delimiter format instead of JSON to avoid escaping nightmares
-        delimiter = "===FILE==="
-
-        parts = [
-            "The TypeScript build is failing with these errors:\n",
-            f"```\n{full_errors[:8000]}\n```\n",
-            f"\nThere are {len(file_contents)} affected files.\n",
-            "Fix ALL the errors in a coordinated way. If a type "
-            "needs to change, update it AND all files that use it.\n\n",
-            "For each file that needs changes, output:\n",
-            f"{delimiter} filepath\n",
-            "followed by the COMPLETE corrected file contents.\n",
-            "Only include files that actually need changes.\n",
-        ]
-        for fpath, content in file_contents.items():
-            parts.append(f"\n### {fpath}\n```\n{content}\n```\n")
-
-        prompt = "\n".join(parts)
-
+        from adam.agents.repair_agent import RepairAgent, RepairSpec
         from adam.types import ModelTier
-        resp = await self._llm.complete(
-            tier=ModelTier.OPUS,
-            messages=[{"role": "user", "content": prompt}],
-            system=(
-                "You are a senior TypeScript engineer. Fix all "
-                "build errors across these files in a coordinated "
-                f"way. Output each fixed file preceded by "
-                f"'{delimiter} filepath'. Only include files that "
-                "need changes. Output ONLY the delimiter lines "
-                "and file contents — no explanations."
-            ),
-            max_tokens=self._llm.settings.max_response_tokens,
-            temperature=0.3,
-        )
 
-        # Parse delimiter-separated response
         files_fixed = 0
-        sections = resp.text.split(delimiter)
-        for section in sections[1:]:  # Skip everything before first delimiter
-            lines = section.strip().split("\n", 1)
-            if len(lines) < 2:
-                continue
-            fpath = lines[0].strip()
-            content = lines[1].strip()
-            # Strip markdown fences if present
-            if content.startswith("```"):
-                content_lines = content.split("\n")
-                content = "\n".join(content_lines[1:])
-            if content.endswith("```"):
-                content = content[:-3].rstrip()
-
+        for fpath, file_errors in error_files.items():
             full_path = Path(self._project_root) / fpath
-            if full_path.exists() and content:
-                full_path.write_text(content, encoding="utf-8")
+            if not full_path.exists():
+                continue
+
+            source = full_path.read_text(encoding="utf-8")
+            file_error_text = "\n".join(file_errors[:20])
+
+            # Read files this file imports from
+            related = self._read_imports(fpath, source)
+
+            repair_spec = RepairSpec(
+                instruction=(
+                    "Fix the build errors in this file. "
+                    "Here are the errors for THIS file:\n"
+                    f"{file_error_text}\n\n"
+                    "Here are ALL build errors across the "
+                    "project (for context — so you understand "
+                    "what other files expect):\n"
+                    f"{full_errors[:4000]}"
+                ),
+                diagnosis=(
+                    f"TypeScript build failed across "
+                    f"{len(error_files)} files. "
+                    f"This file has {len(file_errors)} error(s)."
+                ),
+            )
+
+            repair_ctx = AgentContext(
+                file_spec={"path": fpath},
+                error_output=file_error_text,
+                related_files=related,
+            )
+
+            repairer = RepairAgent(
+                self._llm,
+                source_code=source,
+                repair_spec=repair_spec,
+            )
+            # Use Opus for the repair — it needs to reason
+            # about cross-file relationships
+            repairer.model_tier = ModelTier.OPUS
+
+            result = await repairer.execute(repair_ctx)
+
+            if result.success and result.raw_response.strip():
+                full_path.write_text(
+                    result.raw_response, encoding="utf-8"
+                )
                 files_fixed += 1
                 logger.info("Holistic-repaired: %s", fpath)
+            else:
+                logger.warning(
+                    "Holistic repair failed for %s: %s",
+                    fpath, result.error,
+                )
 
         logger.info(
             "Opus holistic repair fixed %d/%d files",
-            files_fixed, len(file_contents),
+            files_fixed, len(error_files),
         )
         return files_fixed
+
+    def _read_imports(
+        self, fpath: str, source: str,
+    ) -> list[dict]:
+        """Read files that this file imports from disk."""
+        import re
+        related = []
+        # Match: import ... from './foo' or '../foo/bar'
+        for match in re.finditer(
+            r"""from\s+['"](\.[^'"]+)['"]""", source
+        ):
+            import_path = match.group(1)
+            # Resolve relative to file's directory
+            file_dir = Path(fpath).parent
+            resolved = (file_dir / import_path).as_posix()
+            # Try .ts extension
+            for ext in (".ts", ".tsx", "/index.ts"):
+                candidate = Path(self._project_root) / (resolved + ext)
+                if candidate.exists():
+                    try:
+                        content = candidate.read_text(encoding="utf-8")
+                        if len(content) > 3000:
+                            content = content[:3000] + "\n[truncated]"
+                        rel = str(
+                            candidate.relative_to(self._project_root)
+                        )
+                        related.append({
+                            "path": rel,
+                            "content": content,
+                        })
+                    except (OSError, UnicodeDecodeError):
+                        pass
+                    break
+        return related[:5]
 
     async def _run_integration_audit(
         self,
