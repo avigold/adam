@@ -556,13 +556,20 @@ class Orchestrator:
     ) -> bool:
         """Run build, parse errors, repair affected files, repeat.
 
+        Phase 1 (rounds 1-2): Sonnet fixes files individually (fast,
+        handles simple/isolated errors like missing imports).
+        Phase 2 (rounds 3+): Opus sees ALL errors and ALL affected
+        source files at once, produces coordinated fixes.
+
         Returns True if the build passes, False if max rounds exhausted.
         """
-        from adam.agents.repair_agent import RepairAgent, RepairSpec
+
+        prev_error_count = None
 
         for round_num in range(max_rounds):
             logger.info(
-                "Build check (round %d/%d)...", round_num + 1, max_rounds
+                "Build check (round %d/%d)...",
+                round_num + 1, max_rounds,
             )
             build_result = await self._runner.run_build(
                 build_cmd, cwd=self._project_root,
@@ -572,102 +579,50 @@ class Orchestrator:
                 logger.info("Build passes!")
                 return True
 
-            # Parse errors to find affected files
             errors = build_result.output
-            logger.warning(
-                "Build failed (round %d). Errors:\n%s",
-                round_num + 1, errors[:2000],
-            )
-
-            # Extract file paths from error output
-            # TypeScript errors look like: src/foo/bar.ts(12,5): error TS2345: ...
-            # or: src/foo/bar.ts:12:5 - error TS2345: ...
-            import re
-            error_files: dict[str, list[str]] = {}
-            for match in re.finditer(
-                r"(src/[^\s:(]+\.ts)[:(]", errors
-            ):
-                fpath = match.group(1)
-                # Collect error lines for this file
-                if fpath not in error_files:
-                    error_files[fpath] = []
+            error_files = self._parse_build_errors(errors)
 
             if not error_files:
-                # Can't parse which files have errors — try generic repair
                 logger.warning(
                     "Could not parse file paths from build errors"
                 )
                 break
 
+            error_count = len(error_files)
             logger.info(
-                "Build errors in %d file(s): %s",
-                len(error_files),
-                ", ".join(list(error_files.keys())[:10]),
+                "Build errors in %d file(s)", error_count,
             )
 
-            # Repair each file with build errors
-            files_fixed = 0
-            for fpath in error_files:
-                full_path = Path(self._project_root) / fpath
-                if not full_path.exists():
-                    continue
+            # Detect oscillation — if error count isn't decreasing,
+            # switch to Opus immediately
+            use_opus = (
+                round_num >= 2
+                or (
+                    prev_error_count is not None
+                    and error_count >= prev_error_count
+                )
+            )
+            prev_error_count = error_count
 
-                source = full_path.read_text(encoding="utf-8")
-
-                # Get file-specific errors
-                file_errors = []
-                for line in errors.split("\n"):
-                    if fpath in line:
-                        file_errors.append(line.strip())
-                file_error_text = "\n".join(file_errors[:20])
-
-                repair_spec = RepairSpec(
-                    instruction=(
-                        "Fix the build/compilation errors in "
-                        f"this file:\n{file_error_text}"
-                    ),
-                    diagnosis=(
-                        "TypeScript build failed. "
-                        f"Errors:\n{file_error_text}"
-                    ),
+            if use_opus:
+                logger.info(
+                    "Using Opus for holistic build repair "
+                    "(%d files)...", error_count,
+                )
+                fixed = await self._holistic_build_repair(
+                    errors, error_files,
+                )
+            else:
+                logger.info(
+                    "Using Sonnet for per-file build repair "
+                    "(%d files)...", error_count,
+                )
+                fixed = await self._per_file_build_repair(
+                    project_id, errors, error_files,
                 )
 
-                # Read related files for context
-                related = file_loop._read_related_files(
-                    AgentContext(
-                        dependency_interfaces=[],
-                        related_files=[],
-                    )
-                )
-
-                repair_ctx = AgentContext(
-                    project_id=str(project_id),
-                    file_spec={"path": fpath},
-                    error_output=file_error_text,
-                    related_files=related,
-                )
-
-                repairer = RepairAgent(
-                    self._llm,
-                    source_code=source,
-                    repair_spec=repair_spec,
-                )
-                result = await repairer.execute(repair_ctx)
-
-                if result.success and result.raw_response.strip():
-                    full_path.write_text(
-                        result.raw_response, encoding="utf-8"
-                    )
-                    files_fixed += 1
-                    logger.info("Build-repaired: %s", fpath)
-                else:
-                    logger.warning(
-                        "Build repair failed for %s: %s",
-                        fpath, result.error,
-                    )
-
-            if files_fixed == 0:
-                logger.warning("No files could be repaired. Stopping.")
+            if fixed == 0:
+                logger.warning("No files could be repaired.")
                 break
 
         # Final check
@@ -678,8 +633,166 @@ class Orchestrator:
             logger.info("Build passes after repair!")
             return True
 
-        logger.warning("Build still failing after %d repair rounds", max_rounds)
+        logger.warning(
+            "Build still failing after %d rounds", max_rounds,
+        )
         return False
+
+    def _parse_build_errors(
+        self, errors: str,
+    ) -> dict[str, list[str]]:
+        """Parse compiler output to find affected files and their errors."""
+        import re
+        error_files: dict[str, list[str]] = {}
+        for line in errors.split("\n"):
+            match = re.match(r"(src/[^\s:(]+\.ts)[:(]", line)
+            if match:
+                fpath = match.group(1)
+                error_files.setdefault(fpath, []).append(line.strip())
+        return error_files
+
+    async def _per_file_build_repair(
+        self,
+        project_id: uuid.UUID,
+        full_errors: str,
+        error_files: dict[str, list[str]],
+    ) -> int:
+        """Sonnet fixes each file individually. Fast but may oscillate."""
+        from adam.agents.repair_agent import RepairAgent, RepairSpec
+
+        files_fixed = 0
+        for fpath, file_errors in error_files.items():
+            full_path = Path(self._project_root) / fpath
+            if not full_path.exists():
+                continue
+
+            source = full_path.read_text(encoding="utf-8")
+            error_text = "\n".join(file_errors[:20])
+
+            repair_spec = RepairSpec(
+                instruction=(
+                    "Fix the build/compilation errors in "
+                    f"this file:\n{error_text}"
+                ),
+                diagnosis=(
+                    "TypeScript build failed. "
+                    f"Errors:\n{error_text}"
+                ),
+            )
+
+            repair_ctx = AgentContext(
+                project_id=str(project_id),
+                file_spec={"path": fpath},
+                error_output=error_text,
+            )
+
+            repairer = RepairAgent(
+                self._llm,
+                source_code=source,
+                repair_spec=repair_spec,
+            )
+            result = await repairer.execute(repair_ctx)
+
+            if result.success and result.raw_response.strip():
+                full_path.write_text(
+                    result.raw_response, encoding="utf-8"
+                )
+                files_fixed += 1
+                logger.info("Build-repaired: %s", fpath)
+            else:
+                logger.warning(
+                    "Build repair failed for %s: %s",
+                    fpath, result.error,
+                )
+
+        return files_fixed
+
+    async def _holistic_build_repair(
+        self,
+        full_errors: str,
+        error_files: dict[str, list[str]],
+    ) -> int:
+        """Opus sees all errors and all affected files at once.
+
+        Produces a coordinated fix plan that doesn't oscillate.
+        Returns the file contents for each file as a JSON response.
+        """
+        # Read all affected source files
+        file_contents: dict[str, str] = {}
+        for fpath in error_files:
+            full_path = Path(self._project_root) / fpath
+            if full_path.exists():
+                content = full_path.read_text(encoding="utf-8")
+                if len(content) > 5000:
+                    content = content[:5000] + "\n[truncated]"
+                file_contents[fpath] = content
+
+        if not file_contents:
+            return 0
+
+        # Build prompt with ALL errors and ALL affected files
+        # Use a delimiter format instead of JSON to avoid escaping nightmares
+        delimiter = "===FILE==="
+
+        parts = [
+            "The TypeScript build is failing with these errors:\n",
+            f"```\n{full_errors[:8000]}\n```\n",
+            f"\nThere are {len(file_contents)} affected files.\n",
+            "Fix ALL the errors in a coordinated way. If a type "
+            "needs to change, update it AND all files that use it.\n\n",
+            "For each file that needs changes, output:\n",
+            f"{delimiter} filepath\n",
+            "followed by the COMPLETE corrected file contents.\n",
+            "Only include files that actually need changes.\n",
+        ]
+        for fpath, content in file_contents.items():
+            parts.append(f"\n### {fpath}\n```\n{content}\n```\n")
+
+        prompt = "\n".join(parts)
+
+        from adam.types import ModelTier
+        resp = await self._llm.complete(
+            tier=ModelTier.OPUS,
+            messages=[{"role": "user", "content": prompt}],
+            system=(
+                "You are a senior TypeScript engineer. Fix all "
+                "build errors across these files in a coordinated "
+                f"way. Output each fixed file preceded by "
+                f"'{delimiter} filepath'. Only include files that "
+                "need changes. Output ONLY the delimiter lines "
+                "and file contents — no explanations."
+            ),
+            max_tokens=self._llm.settings.max_response_tokens,
+            temperature=0.3,
+        )
+
+        # Parse delimiter-separated response
+        files_fixed = 0
+        sections = resp.text.split(delimiter)
+        for section in sections[1:]:  # Skip everything before first delimiter
+            lines = section.strip().split("\n", 1)
+            if len(lines) < 2:
+                continue
+            fpath = lines[0].strip()
+            content = lines[1].strip()
+            # Strip markdown fences if present
+            if content.startswith("```"):
+                content_lines = content.split("\n")
+                content = "\n".join(content_lines[1:])
+            if content.endswith("```"):
+                content = content[:-3].rstrip()
+
+            full_path = Path(self._project_root) / fpath
+            if full_path.exists() and content:
+                full_path.write_text(content, encoding="utf-8")
+                files_fixed += 1
+                logger.info("Holistic-repaired: %s", fpath)
+
+        logger.info(
+            "Opus holistic repair fixed %d/%d files",
+            files_fixed, len(file_contents),
+        )
+        return files_fixed
 
     async def _run_integration_audit(
         self,
