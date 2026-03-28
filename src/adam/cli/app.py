@@ -45,16 +45,10 @@ logger = logging.getLogger(__name__)
 def _on_file_start(
     file_path: str, current: int, total: int, is_revision: bool,
 ) -> None:
-    """Callback: display a status line when a file starts processing."""
-    import random
-    from adam.cli.display import _THINKING_VERBS
-
-    verb = random.choice(_THINKING_VERBS)
+    """Callback: display a brief status when a file starts processing."""
     action = "Revising" if is_revision else "Implementing"
     console.print(
-        f"  [dim][{current}/{total}][/dim] "
-        f"[bold]{action}[/bold] {file_path} "
-        f"[dim italic]({verb})[/dim italic]"
+        f"  [dim][{current}/{total}] {action}: {file_path}[/dim]"
     )
 
 

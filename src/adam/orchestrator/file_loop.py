@@ -65,8 +65,10 @@ class FileLoop:
         logger.info("Processing file: %s", file_path)
 
         # Step 1: Implement
+        from adam.cli.display import thinking
         implementer = FileImplementer(self._llm)
-        impl_result = await implementer.execute(context)
+        async with thinking(f"Implementing {file_path}"):
+            impl_result = await implementer.execute(context)
 
         if not impl_result.success:
             logger.error("Implementation failed for %s: %s", file_path, impl_result.error)
@@ -267,7 +269,8 @@ class FileLoop:
             )
 
             repairer = RepairAgent(self._llm, source_code=code, repair_spec=repair_spec)
-            repair_result = await repairer.execute(repair_ctx)
+            async with thinking(f"Repairing {file_path}"):
+                repair_result = await repairer.execute(repair_ctx)
 
             if repair_result.success and repair_result.raw_response.strip():
                 code = repair_result.raw_response
