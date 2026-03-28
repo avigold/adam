@@ -141,7 +141,11 @@ class DependencyManager:
         return None
 
     async def install(self) -> ExecutionResult:
-        """Install all project dependencies."""
+        """Install all project dependencies.
+
+        For npm, falls back to --legacy-peer-deps if the initial
+        install fails with peer dependency conflicts.
+        """
         pm = self._pm or self.detect_package_manager()
         if pm is None:
             logger.warning("No package manager detected")
@@ -153,9 +157,26 @@ class DependencyManager:
             )
 
         logger.info("Installing dependencies with %s", pm.name)
-        return await self._runner.run(
+        result = await self._runner.run(
             pm.install_command, cwd=self._root, timeout=300,
         )
+
+        # Retry with --legacy-peer-deps for npm peer conflicts
+        if (
+            not result.success
+            and pm.name == "npm"
+            and "ERESOLVE" in result.output
+        ):
+            logger.info(
+                "npm peer dependency conflict — retrying with "
+                "--legacy-peer-deps"
+            )
+            result = await self._runner.run(
+                "npm install --legacy-peer-deps",
+                cwd=self._root, timeout=300,
+            )
+
+        return result
 
     async def add_package(self, package: str) -> ExecutionResult:
         """Add a single package dependency."""

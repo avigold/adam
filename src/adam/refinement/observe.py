@@ -252,6 +252,28 @@ class Observer:
                     )
                     if cmd_result.success:
                         logger.info("Setup command succeeded: %s", cmd.command)
+                    elif (
+                        "npm install" in cmd.command
+                        and "ERESOLVE" in cmd_result.output
+                    ):
+                        # Retry with --legacy-peer-deps
+                        logger.info(
+                            "npm peer conflict — retrying with "
+                            "--legacy-peer-deps"
+                        )
+                        fallback = cmd.command.replace(
+                            "npm install", "npm install --legacy-peer-deps",
+                        )
+                        cmd_result = await self._runner.run(
+                            fallback, cwd=cwd, timeout=120,
+                        )
+                        if cmd_result.success:
+                            logger.info("Setup command succeeded with --legacy-peer-deps")
+                        else:
+                            logger.warning(
+                                "Setup command still failed: %s",
+                                cmd_result.output[:200],
+                            )
                     else:
                         logger.warning(
                             "Setup command failed: %s — %s",

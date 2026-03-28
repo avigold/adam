@@ -234,17 +234,42 @@ class DevServer:
         return self._process is not None and self._process.returncode is None
 
     async def start(self) -> bool:
-        """Start the dev server and wait for it to be ready."""
+        """Start the dev server and wait for it to be ready.
+
+        Checks that the port is free before starting. If occupied,
+        tries up to 5 alternative ports to avoid colliding with
+        other running servers.
+        """
         if self.running:
             logger.info("Dev server already running at %s", self.url)
             return True
 
+        # Find a free port — don't collide with existing servers
+        original_port = self._port
+        for attempt in range(5):
+            if not self._port_in_use(self._port):
+                break
+            logger.warning(
+                "Port %d is already in use, trying %d",
+                self._port, self._port + 1,
+            )
+            self._port += 1
+        else:
+            logger.error(
+                "No free port found (tried %d-%d)",
+                original_port, self._port,
+            )
+            return False
+
+        # Inject the port into the command
+        command = self._inject_port(self._command, self._port)
+
         logger.info(
-            "Starting dev server: %s (port %d)", self._command, self._port
+            "Starting dev server: %s (port %d)", command, self._port
         )
 
         self._process = await asyncio.create_subprocess_shell(
-            self._command,
+            command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             cwd=self._cwd,
@@ -319,6 +344,43 @@ class DevServer:
 
         self._process = None
         logger.info("Dev server stopped")
+
+    @staticmethod
+    def _port_in_use(port: int) -> bool:
+        """Check if a port is already in use."""
+        import socket
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("127.0.0.1", port))
+                return False
+            except OSError:
+                return True
+
+    @staticmethod
+    def _inject_port(command: str, port: int) -> str:
+        """Inject the port into a dev server command.
+
+        Handles common patterns:
+        - npx vite → npx vite --port 5173
+        - npx next dev → npx next dev -p 3001
+        - python manage.py runserver → python manage.py runserver 8001
+        - uvicorn main:app → uvicorn main:app --port 8001
+        - npm run dev → PORT=3001 npm run dev
+        """
+        cmd_lower = command.lower()
+
+        if "vite" in cmd_lower:
+            return f"{command} --port {port}"
+        if "next" in cmd_lower:
+            return f"{command} -p {port}"
+        if "manage.py runserver" in cmd_lower:
+            return f"{command} {port}"
+        if "uvicorn" in cmd_lower:
+            return f"{command} --port {port}"
+        if "flask" in cmd_lower:
+            return f"{command} --port {port}"
+        # Generic: set PORT env var (works for many Node frameworks)
+        return f"PORT={port} {command}"
 
     @property
     def recent_output(self) -> str:
