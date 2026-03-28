@@ -24,7 +24,7 @@ You describe what you want to build in a `context/spec.md` file. Adam reads it, 
 7. **Generates tests** — writes tests for each accepted file
 8. **Integration audits** — after all modules pass individually, checks cross-module coherence (Opus)
 9. **Observes its own output** — screenshots UI via Playwright, smoke-tests API endpoints, runs CLI tools and verifies output
-10. **Revises** — if integration or visual issues are found, marks affected files for re-implementation and sweeps again
+10. **Refines** — after construction, observes whether the project actually builds and runs, fixes issues one at a time with verification after each fix
 11. **Stops** when six conditions are met: all obligations resolved, all tests pass, all hard validators pass, soft critics above threshold, visual inspection passes, all files accepted
 
 The entire process runs autonomously. You approve the architecture at the start (or skip with `--no-checkpoints`) and come back to a working project.
@@ -37,9 +37,29 @@ Adam is derived from [Postwriter](https://postwriter.app), which orchestrates no
 
 | Layer | Model | Role |
 |-------|-------|------|
-| Architectural reasoning | Opus | Project design, integration audit, visual evaluation |
-| Implementation | Sonnet | File writing, test writing, code review, repair, diagnosis |
+| Architectural reasoning | Opus | Project design, integration audit, visual evaluation, build analysis, meta-cognition |
+| Implementation | Sonnet | File writing, test writing, code review, repair, diagnosis, change planning |
 | Mechanical validation | Shell | Test runner, linter, type checker, build checker |
+
+### The pipeline
+
+```
+plan → construct → refine → done
+                              ↘
+                          iterate → construct → refine → done
+```
+
+**Plan**: Opus designs the architecture, Sonnet decomposes into modules and files, scaffolder creates the project skeleton.
+
+**Construct**: Each file is implemented, validated, and repaired in a loop. Integration audit checks cross-module coherence. Visual audit screenshots the UI.
+
+**Refine**: The Observer checks whether the project actually builds and runs. The Refiner fixes issues one at a time — observe, fix, verify, revert if worse, commit if better. Repeats until healthy.
+
+**Iterate**: When you update your spec or run `adam iterate`, Opus analyses the delta, Sonnet plans file-level changes, and the system re-enters construct → refine.
+
+### Meta-cognition
+
+A progress monitor tracks error counts, repair rounds, and trajectory patterns. When it detects stagnation, oscillation, or regression, an Opus supervisor agent makes a strategic decision: change approach, skip and return later, accept the imperfection, or stop entirely. This prevents the infinite thrashing loops that plague naive repair systems.
 
 ### The implementation loop
 
@@ -131,20 +151,56 @@ Place any of these in `context/`:
 | `tech-stack.md` | Technology preferences |
 | `architecture.md` | Structural constraints |
 | `style.md` | Coding conventions |
-| `reference/*.md` | API docs, examples |
+| `reference/*.md` | API docs, examples, patterns to follow |
 | `assets/*` | Sprites, images, fonts (copied to project) |
 
 Adam reads everything, infers what it can, and asks about the rest. The more you specify, the less you're asked.
 
-### CLI options
+### CLI commands
 
 ```bash
+# Build a new project or resume an existing one
 adam                        # Run with defaults (architecture checkpoint on)
 adam --no-checkpoints       # Skip human approval, fully autonomous
 adam --profile fast_draft   # Fewer repair rounds, no critics
 adam --profile high_quality # Max repair rounds, visual inspection
 adam --debug                # Verbose console output
+
+# Fix a project that doesn't build or has failing tests
+adam fix                    # Auto-detects build/test commands
+adam fix --build-cmd "npm run build"  # Explicit build command
+adam fix --test-cmd "pytest"          # Explicit test command
+adam fix --max-rounds 20              # More fix attempts (default: 15)
+
+# Iterate on an existing project
+adam iterate                           # Interactive — asks what to change
+adam iterate add WebSocket support     # Direct instructions
 ```
+
+### `adam fix`
+
+When a project doesn't build, crashes, or has failing tests, `adam fix` runs a targeted repair loop:
+
+1. **Observe** — runs the build/test commands, captures the output
+2. **Analyse** — Opus reads the errors (any language) and identifies root causes, affected files, and suggested fixes. If the fix requires a shell command (like `npm install`), it runs that too.
+3. **Fix** — Sonnet applies the minimum change to the top-priority file
+4. **Verify** — re-runs build/test to confirm the fix helped
+5. **Revert or commit** — if the fix made things worse, reverts to the snapshot. If it helped, commits.
+6. **Repeat** — until the project is healthy or the round budget is exhausted
+
+Build/test commands are auto-detected from `package.json`, `pyproject.toml`, `Cargo.toml`, or `go.mod`. For projects with subdirectory frontends (e.g., `site/`), detection checks common subdirectories automatically.
+
+### `adam iterate`
+
+For incremental development on existing projects. Three entry points:
+
+1. **Spec changes detected** — edit your `context/spec.md`, run `adam`. Adam detects the change, Opus analyses what it means for the codebase, Sonnet plans the file-level work, and the system re-implements only what changed.
+
+2. **Explicit instructions** — `adam iterate add user authentication with JWT`. Opus treats your instruction as a spec delta and plans accordingly.
+
+3. **Interactive** — `adam iterate` with no changes and no instructions. Adam asks what you'd like to change.
+
+After planning, iterate feeds into the same construct → refine pipeline as a new project, but only touches affected files.
 
 ### Profiles
 
@@ -164,12 +220,14 @@ If Adam is interrupted, run `adam` again in the same directory. It detects the `
 ```
 src/adam/
   agents/          # LLM-powered agents (architect, implementer, repair, etc.)
-  orchestrator/    # Implementation loop, planning, multi-pass revision
+  orchestrator/    # Implementation loop, planning, multi-pass revision, progress monitor
+  refinement/      # Observer, refiner, git snapshots — the fix loop
+  pipeline/        # Pipeline stages, iterate stage, context fingerprinting
   validation/      # Hard validators (test/lint/build) and soft critics
   inspection/      # Visual (Playwright), API smoke, CLI verification
   execution/       # Shell runner, dependency manager, dev server
   store/           # Project store (SQLAlchemy), context slicer, events
-  context/         # Spec loader, asset manifest, condenser
+  context/         # Spec loader, asset manifest, fingerprinting
   llm/             # Anthropic client with tiering, budgets, streaming
   git/             # Git operations (init, commit, rollback)
   repair/          # Repair planner, priority ordering
@@ -189,7 +247,11 @@ src/adam/
 | Test Writer | Sonnet | Generate tests for implemented files |
 | Error Diagnostician | Sonnet | Diagnose failures, identify cross-file issues |
 | Repair Agent | Sonnet | Apply minimum targeted fix |
+| Build Analyser | Opus | Language-agnostic build/test error analysis |
 | Integration Auditor | Opus | Check cross-module coherence after implementation |
+| Supervisor | Opus | Meta-cognitive strategic decisions when stuck |
+| Spec Differ | Opus | Analyse changes between spec versions |
+| Change Planner | Sonnet | Map spec deltas to file-level work |
 | Route Discoverer | Sonnet | Extract pages/routes for visual inspection |
 | Code Quality Critic | Sonnet | Evaluate readability, maintainability, idiomaticity |
 | Security Critic | Sonnet | Check for vulnerabilities (file-type-aware) |
@@ -222,9 +284,11 @@ All state lives in `.adam/` in the project directory:
 
 ```
 .adam/
-  project.json    # Phase, project ID, title
-  adam.db          # SQLite database (modules, files, obligations, events)
-  adam.log         # Full debug log of every LLM call and decision
+  project.json       # Phase, project ID, title
+  adam.db             # SQLite database (modules, files, obligations, events)
+  adam.log            # Full debug log of every LLM call and decision
+  context_state.json  # Fingerprints of context files (for change detection)
+  context_snapshot/   # Cached context file contents (for spec diffing)
 ```
 
 The log file captures every prompt sent, every response received, every validation result, and every repair attempt. If something goes wrong, the diagnosis is in the log.
