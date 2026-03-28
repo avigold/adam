@@ -74,12 +74,15 @@ class ShellRunner:
         start = time.monotonic()
 
         try:
+            import signal
+
             proc = await asyncio.create_subprocess_shell(
                 command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=working_dir,
                 env=run_env,
+                preexec_fn=os.setsid,  # New process group so we can kill the whole tree
             )
 
             try:
@@ -87,7 +90,11 @@ class ShellRunner:
                     proc.communicate(), timeout=timeout_sec
                 )
             except TimeoutError:
-                proc.kill()
+                # Kill the entire process group (npm + child vite/node)
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                except (ProcessLookupError, OSError):
+                    proc.kill()
                 await proc.wait()
                 duration = time.monotonic() - start
                 logger.warning("Command timed out after %.1fs: %s", duration, command)
