@@ -60,7 +60,17 @@
       "Bash(find /Users/avramscore/Projects/balagan/tests -name *.ts)",
       "Bash(xargs cat:*)",
       "Bash(uv pip:*)",
-      "WebFetch(domain:mysecond.app)"
+      "WebFetch(domain:mysecond.app)",
+      "Bash(npx tsc:*)",
+      "Bash(git reset:*)",
+      "Bash(git rm:*)",
+      "Bash(git remote:*)",
+      "Bash(rsync -avz --delete dist/ root@204.168.219.211:/var/www/meetadam/play/)",
+      "Bash(curl -sI https://meetadam.app/play)",
+      "Bash(pip index:*)",
+      "Bash(uv build:*)",
+      "Bash(uv publish:*)",
+      "Bash(rsync -avz --delete --exclude='play/' dist/ root@204.168.219.211:/var/www/meetadam/)"
     ]
   }
 }

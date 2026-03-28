@@ -5,7 +5,7 @@
 Adam takes a project specification and autonomously builds the entire codebase — architecture, implementation, testing, code review, visual inspection, and iterative repair — without human intervention. It replaces you as the orchestrator so you can focus on the big ideas.
 
 ```
-$ pip install adam-eng
+$ pip install adam-cli
 $ cd my-project
 $ mkdir context && vi context/spec.md
 $ adam
@@ -77,7 +77,7 @@ for pass in range(max_passes):
 ## Installation
 
 ```bash
-pip install adam-eng
+pip install adam-cli
 ```
 
 Requires Python 3.12+ and an Anthropic API key. No database, no Docker, no configuration.
@@ -87,9 +87,9 @@ On first run, Adam will prompt for your API key and save it to `~/.adam/config`.
 ### Optional dependencies
 
 ```bash
-pip install adam-eng[visual]   # Playwright for UI screenshot inspection
-pip install adam-eng[postgres]  # PostgreSQL instead of SQLite
-pip install adam-eng[all]       # Everything
+pip install adam-cli[visual]   # Playwright for UI screenshot inspection
+pip install adam-cli[postgres]  # PostgreSQL instead of SQLite
+pip install adam-cli[all]       # Everything
 ```
 
 ## Usage
