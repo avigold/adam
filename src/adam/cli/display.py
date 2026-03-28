@@ -98,10 +98,14 @@ async def thinking(label: str | None = None) -> AsyncGenerator[None, None]:
                 await asyncio.wait_for(stop_event.wait(), timeout=4.0)
                 break
             except TimeoutError:
-                if not label:
-                    idx = (idx + 1) % len(verbs)
                 elapsed = int(_time.monotonic() - t0)
-                verb = label or verbs[idx]
+                # Show the label for the first 8 seconds,
+                # then start rotating through Jewish engineering verbs
+                if elapsed < 8 and label:
+                    verb = label
+                else:
+                    idx = (idx + 1) % len(verbs)
+                    verb = verbs[idx]
                 if elapsed >= 10:
                     status.update(f"  {verb}... ({elapsed}s)")
                 else:
