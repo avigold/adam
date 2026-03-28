@@ -145,10 +145,22 @@ def detect_dev_server(
     """
     root = Path(project_root)
 
-    # 1. Explicit config from architecture
+    # 1. Explicit config from architecture — but use framework-aware
+    # port defaults, not a blind 3000
     if build_system and build_system.get("dev_server"):
         cmd = build_system["dev_server"]
-        port = int(build_system.get("dev_port", 3000))
+        # Infer port from the command if not explicitly set
+        default_port = 3000
+        cmd_lower = cmd.lower()
+        if "vite" in cmd_lower:
+            default_port = 5173
+        elif "astro" in cmd_lower:
+            default_port = 4321
+        elif "uvicorn" in cmd_lower or "django" in cmd_lower:
+            default_port = 8000
+        elif "flask" in cmd_lower:
+            default_port = 5000
+        port = int(build_system.get("dev_port", default_port))
         return DevServerConfig(
             name="configured",
             command=cmd,
@@ -246,13 +258,14 @@ class DevServer:
 
         # Find a free port — don't collide with existing servers
         original_port = self._port
-        for attempt in range(5):
-            if not self._port_in_use(self._port):
-                break
-            logger.warning(
-                "Port %d is already in use, trying %d",
-                self._port, self._port + 1,
+        for attempt in range(10):
+            in_use = self._port_in_use(self._port)
+            logger.info(
+                "Port %d: %s",
+                self._port, "IN USE" if in_use else "free",
             )
+            if not in_use:
+                break
             self._port += 1
         else:
             logger.error(
@@ -347,14 +360,23 @@ class DevServer:
 
     @staticmethod
     def _port_in_use(port: int) -> bool:
-        """Check if a port is already in use."""
+        """Check if a port is already in use.
+
+        Tries connecting to the port (not binding) to detect any
+        listener — works regardless of IPv4/IPv6 and whether the
+        listener is on 0.0.0.0 or 127.0.0.1.
+        """
         import socket
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            try:
-                s.bind(("127.0.0.1", port))
-                return False
-            except OSError:
-                return True
+        for family in (socket.AF_INET, socket.AF_INET6):
+            with socket.socket(family, socket.SOCK_STREAM) as s:
+                s.settimeout(0.5)
+                try:
+                    s.connect(("localhost", port))
+                    s.close()
+                    return True  # Something is listening
+                except (ConnectionRefusedError, OSError):
+                    continue
+        return False
 
     @staticmethod
     def _inject_port(command: str, port: int) -> str:
