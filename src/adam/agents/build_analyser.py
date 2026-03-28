@@ -31,11 +31,19 @@ class BuildError(BaseModel):
     is_root_cause: bool = True  # False if this is a symptom of another error
 
 
+class SetupCommand(BaseModel):
+    """A shell command that must be run to fix the environment."""
+    command: str = ""  # e.g., "npm install", "pip install -r requirements.txt"
+    working_directory: str = ""  # Relative to project root, empty = root
+    reason: str = ""  # Why this command needs to run
+
+
 class BuildAnalysis(BaseModel):
     """Complete analysis of build/test output."""
     language: str = ""  # Detected language/framework
     total_errors: int = 0
     errors: list[BuildError] = Field(default_factory=list)
+    commands_to_run: list[SetupCommand] = Field(default_factory=list)  # Shell commands needed before/instead of file edits
     root_cause_summary: str = ""  # High-level: what's fundamentally wrong
     fix_order: list[str] = Field(default_factory=list)  # File paths in recommended fix order
     notes: Any = ""

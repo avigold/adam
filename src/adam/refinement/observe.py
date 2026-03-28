@@ -211,6 +211,37 @@ class Observer:
             issues: list[Issue] = []
             seen: set[str] = set()
 
+            # Execute any setup commands first (npm install, etc.)
+            if analysis.commands_to_run:
+                for cmd in analysis.commands_to_run:
+                    if not cmd.command:
+                        continue
+                    cwd = self._root
+                    if cmd.working_directory:
+                        cwd = str(Path(self._root) / cmd.working_directory)
+                    logger.info(
+                        "Running setup command: %s (in %s) — %s",
+                        cmd.command, cwd, cmd.reason,
+                    )
+                    cmd_result = await self._runner.run(
+                        cmd.command, cwd=cwd, timeout=120,
+                    )
+                    if cmd_result.success:
+                        logger.info("Setup command succeeded: %s", cmd.command)
+                    else:
+                        logger.warning(
+                            "Setup command failed: %s — %s",
+                            cmd.command, cmd_result.output[:200],
+                        )
+
+                # Re-run the build to see if commands fixed it
+                recheck = await self._runner.run_build(command, cwd=self._root)
+                if recheck.success:
+                    logger.info("Build passes after running setup commands")
+                    return []  # No issues — commands fixed it
+                # Update output for further analysis
+                output = recheck.output
+
             for error in analysis.errors:
                 key = f"{error.file_path}:{error.line_number}:{error.summary}"
                 if key in seen:

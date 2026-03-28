@@ -49,6 +49,14 @@ Analyse the build output above. For each distinct error:
 7. **is_root_cause**: Set to false if this error is a downstream symptom of another error in your list. For example, if file A has a wrong export and files B, C, D all fail to import from it, only A is the root cause.
 
 Also provide:
+
+- **commands_to_run**: Shell commands that need to be executed to fix environment issues (e.g., `npm install`, `pip install -r requirements.txt`, `cd site && npm install`). Each command has:
+  - `command`: The shell command to run
+  - `working_directory`: Directory to run it in, relative to project root (empty = root)
+  - `reason`: Why this command is needed
+
+  Use this for dependency installation, missing packages, environment setup — anything that can't be fixed by editing a source file. Commands run BEFORE file edits.
+
 - **root_cause_summary**: One paragraph explaining the fundamental problem(s)
 - **fix_order**: File paths in the order they should be fixed (root causes first, then dependents)
 

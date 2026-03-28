@@ -726,6 +726,31 @@ class Orchestrator:
                 ))
 
             if result.success and isinstance(result.parsed, BuildAnalysis):
+                # Execute setup commands first (npm install, etc.)
+                if result.parsed.commands_to_run:
+                    for cmd in result.parsed.commands_to_run:
+                        if not cmd.command:
+                            continue
+                        cwd = self._project_root
+                        if cmd.working_directory:
+                            cwd = str(
+                                Path(self._project_root) / cmd.working_directory
+                            )
+                        logger.info(
+                            "Running setup command: %s (in %s)",
+                            cmd.command, cwd,
+                        )
+                        cmd_result = await self._runner.run(
+                            cmd.command, cwd=cwd, timeout=120,
+                        )
+                        if cmd_result.success:
+                            logger.info("Setup command succeeded")
+                        else:
+                            logger.warning(
+                                "Setup command failed: %s",
+                                cmd_result.output[:200],
+                            )
+
                 error_files: dict[str, list[str]] = {}
                 for error in result.parsed.errors:
                     if error.file_path:
