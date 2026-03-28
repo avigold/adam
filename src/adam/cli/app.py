@@ -22,6 +22,7 @@ from adam.cli.display import (
     show_info,
     show_orchestrator_result,
     show_phase,
+    show_refinement_result,
     show_token_usage,
 )
 from adam.config import Settings
@@ -313,6 +314,13 @@ async def _handle_existing(
             result = await orchestrator.run(uuid.UUID(state.project_id))
             show_orchestrator_result(result)
 
+            # Refinement — observe, fix, verify
+            refine_result = await _run_refine(
+                llm, project_dir, settings,
+            )
+            if refine_result:
+                show_refinement_result(refine_result)
+
             if result.success:
                 update_phase(project_dir, "complete")
                 _save_context_fingerprints(project_dir)
@@ -443,6 +451,13 @@ async def _handle_new(
         result = await orchestrator.run(project_id)
         show_orchestrator_result(result)
 
+        # Step 9: Refinement — observe, fix, verify
+        refine_result = await _run_refine(
+            llm, project_dir, settings,
+        )
+        if refine_result:
+            show_refinement_result(refine_result)
+
         if result.success:
             update_phase(project_dir, "complete")
             console.print("\n[bold green]Project complete![/bold green]")
@@ -460,6 +475,126 @@ async def _handle_new(
         show_info(f"Full log: {project_dir / '.adam' / 'adam.log'}")
 
     await engine.dispose()
+
+
+async def _run_refine(
+    llm: LLMClient,
+    project_dir: Path,
+    settings: Settings,
+) -> object | None:
+    """Run the refinement loop after construction.
+
+    Detects build/test commands from the project, then runs the
+    observe → fix → verify cycle until healthy or budget exhausted.
+    """
+    from adam.refinement.refiner import Refiner, RefinementConfig
+
+    show_phase(
+        "Refinement",
+        "Observing output, fixing issues, verifying improvements...",
+    )
+
+    # Detect build/test commands
+    build_cmd, test_cmd, run_cmd = _detect_project_commands(project_dir)
+
+    if not build_cmd and not test_cmd:
+        show_info(
+            "[dim]No build or test commands detected — "
+            "skipping refinement[/dim]"
+        )
+        return None
+
+    if build_cmd:
+        show_info(f"Build: {build_cmd}")
+    if test_cmd:
+        show_info(f"Test: {test_cmd}")
+
+    config = RefinementConfig(
+        max_rounds=settings.orchestrator.max_repair_rounds * 3,
+        build_cmd=build_cmd,
+        run_cmd=run_cmd,
+        test_cmd=test_cmd,
+    )
+
+    def on_round_start(
+        round_num: int, observation: object, issue: object,
+    ) -> None:
+        from adam.refinement.observe import Issue, Observation
+        if isinstance(observation, Observation) and isinstance(issue, Issue):
+            console.print(
+                f"  [dim]Round {round_num}[/dim] "
+                f"[bold]{observation.health.name}[/bold] "
+                f"({observation.issue_count} issues) — "
+                f"fixing: {issue.summary[:60]}"
+            )
+
+    def on_round_end(
+        round_num: int, improved: bool, reverted: bool,
+    ) -> None:
+        if reverted:
+            console.print(
+                f"  [dim]Round {round_num}[/dim] "
+                f"[yellow]reverted[/yellow] (made things worse)"
+            )
+        elif improved:
+            console.print(
+                f"  [dim]Round {round_num}[/dim] "
+                f"[green]committed[/green]"
+            )
+
+    refiner = Refiner(
+        llm=llm,
+        project_root=project_dir,
+        config=config,
+        on_round_start=on_round_start,
+        on_round_end=on_round_end,
+    )
+
+    result = await refiner.refine()
+    return result
+
+
+def _detect_project_commands(project_dir: Path) -> tuple[str, str, str]:
+    """Detect build, test, and run commands from project files."""
+    import json
+
+    build_cmd = ""
+    test_cmd = ""
+    run_cmd = ""
+
+    # package.json
+    pkg_json = project_dir / "package.json"
+    if pkg_json.is_file():
+        try:
+            pkg = json.loads(pkg_json.read_text(encoding="utf-8"))
+            scripts = pkg.get("scripts", {})
+            if scripts.get("build"):
+                build_cmd = "npm run build"
+            if scripts.get("test"):
+                test_cmd = "npm test"
+            if scripts.get("dev"):
+                run_cmd = "npm run dev"
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    # pyproject.toml
+    pyproject = project_dir / "pyproject.toml"
+    if pyproject.is_file() and not test_cmd:
+        test_cmd = "pytest"
+
+    # Cargo.toml
+    cargo = project_dir / "Cargo.toml"
+    if cargo.is_file() and not build_cmd:
+        build_cmd = "cargo build"
+        test_cmd = "cargo test"
+
+    # go.mod
+    gomod = project_dir / "go.mod"
+    if gomod.is_file() and not build_cmd:
+        build_cmd = "go build ./..."
+        test_cmd = "go test ./..."
+
+    return build_cmd, test_cmd, run_cmd
 
 
 def _save_context_fingerprints(
@@ -616,6 +751,11 @@ async def _run_iterate(
         )
         orch_result = await orchestrator.run(uuid.UUID(state.project_id))
         show_orchestrator_result(orch_result)
+
+        # Refinement
+        refine_result = await _run_refine(llm, project_dir, settings)
+        if refine_result:
+            show_refinement_result(refine_result)
 
         if orch_result.success:
             update_phase(project_dir, "complete")

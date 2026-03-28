@@ -290,6 +290,58 @@ def show_token_usage(usage: dict[str, Any]) -> None:
     console.print(table)
 
 
+def show_refinement_result(result: Any) -> None:
+    """Display the outcome of the refinement loop."""
+    from adam.refinement.refiner import RefinementResult
+
+    if not isinstance(result, RefinementResult):
+        return
+
+    console.print()
+
+    health_colors = {
+        "DOES_NOT_BUILD": "red",
+        "BUILDS_BUT_CRASHES": "red",
+        "RUNS_BUT_BROKEN": "yellow",
+        "RUNS_WITH_ISSUES": "yellow",
+        "RUNS_CLEAN": "green",
+        "TESTS_FAILING": "yellow",
+        "FULLY_HEALTHY": "bold green",
+    }
+
+    initial_color = health_colors.get(result.initial_health.name, "white")
+    final_color = health_colors.get(result.final_health.name, "white")
+
+    table = Table(title="Refinement", show_lines=False)
+    table.add_column("Metric", style="bold")
+    table.add_column("Value", justify="right")
+
+    table.add_row("Rounds", str(result.rounds_completed))
+    table.add_row("Fixes committed", str(result.fixes_committed))
+    table.add_row("Fixes reverted", str(result.fixes_reverted))
+    table.add_row(
+        "Health",
+        f"[{initial_color}]{result.initial_health.name}[/] → "
+        f"[{final_color}]{result.final_health.name}[/]",
+    )
+    table.add_row(
+        "Issues",
+        f"{result.initial_issue_count} → {result.final_issue_count}",
+    )
+    table.add_row("Stopped", result.stopped_reason)
+
+    console.print(table)
+
+    if result.issues_fixed:
+        console.print("\n[dim]Fixed:[/dim]")
+        for fix in result.issues_fixed[:10]:
+            console.print(f"  [green]✓[/green] {fix}")
+        if len(result.issues_fixed) > 10:
+            console.print(
+                f"  [dim]... and {len(result.issues_fixed) - 10} more[/dim]"
+            )
+
+
 # ---------------------------------------------------------------------------
 # Progress bar factory
 # ---------------------------------------------------------------------------
