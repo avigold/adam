@@ -41,7 +41,7 @@ class SpecDiffResponse(BaseModel):
     feature_changes: list[FeatureChange] = Field(default_factory=list)
     constraint_changes: list[ConstraintChange] = Field(default_factory=list)
     removed_features: list[str] = Field(default_factory=list)
-    migration_notes: str = ""  # Any special considerations for the transition
+    migration_notes: Any = ""  # Any special considerations for the transition
     estimated_scope: str = "minor"  # "minor", "moderate", "major", "rewrite"
     confidence: float = 0.8
 
