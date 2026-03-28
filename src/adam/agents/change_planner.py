@@ -19,8 +19,8 @@ from adam.types import AgentContext, ModelTier
 
 class PlannedFile(BaseModel):
     """A file that needs to be created or modified."""
-    path: str
-    action: str  # "create", "modify", "delete"
+    path: str = ""
+    action: str = "modify"  # "create", "modify", "delete"
     module: str = ""  # Which module this belongs to
     purpose: str = ""  # What this file does / what changes
     dependencies: list[str] = Field(default_factory=list)
@@ -30,15 +30,15 @@ class PlannedFile(BaseModel):
 
 class PlannedObligation(BaseModel):
     """A new or updated obligation to track."""
-    description: str
-    action: str  # "create", "update", "close"
+    description: str = ""
+    action: str = "create"  # "create", "update", "close"
     priority: str = "normal"
     source: str = "spec_change"
 
 
 class ChangePlanResponse(BaseModel):
     """Concrete file-level plan for implementing spec changes."""
-    summary: str
+    summary: str = ""
     files_to_create: list[PlannedFile] = Field(default_factory=list)
     files_to_modify: list[PlannedFile] = Field(default_factory=list)
     files_to_delete: list[str] = Field(default_factory=list)

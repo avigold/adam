@@ -21,7 +21,7 @@ from adam.types import AgentContext, ModelTier
 
 class Directive(BaseModel):
     """A strategic decision from the supervisor."""
-    action: str
+    action: str = "continue"
     # Possible actions:
     #   "continue"            — keep going, the trouble signal is a false alarm
     #   "skip_and_return"     — skip this file/issue, come back to it later
@@ -33,7 +33,7 @@ class Directive(BaseModel):
     #   "restructure"         — the module/file decomposition is the problem
     #   "abort"               — stop this loop entirely, escalate to human
 
-    reasoning: str  # Why this decision was made
+    reasoning: str = ""  # Why this decision was made
     target_files: list[str] = Field(default_factory=list)  # Files affected by this decision
     new_instruction: str = ""  # If change_approach: what to try instead
     confidence: float = 0.7
@@ -41,7 +41,7 @@ class Directive(BaseModel):
 
 class SupervisorResponse(BaseModel):
     """Full response from the supervisor agent."""
-    assessment: str  # One-paragraph assessment of the situation
+    assessment: str = ""  # One-paragraph assessment of the situation
     directive: Directive
     observations: list[str] = Field(default_factory=list)  # Things the supervisor noticed
 

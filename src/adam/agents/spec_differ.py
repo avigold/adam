@@ -18,25 +18,26 @@ from adam.types import AgentContext, ModelTier
 
 class FeatureChange(BaseModel):
     """A single feature-level change detected in the spec."""
-    description: str
-    change_type: str  # "added", "modified", "removed", "clarified"
+    description: str = ""
+    change_type: str = "modified"  # "added", "modified", "removed", "clarified"
     scope: str = "local"  # "local" (single file), "module" (multiple files), "architectural" (structural)
     priority: str = "normal"  # "critical", "high", "normal", "low"
     rationale: str = ""  # Why the agent thinks this change was made
     affected_areas: list[str] = Field(default_factory=list)  # Module/area names likely affected
+    details: str = ""  # Additional context from the LLM
 
 
 class ConstraintChange(BaseModel):
     """A change to project constraints (style, tech, architecture)."""
-    description: str
-    change_type: str  # "added", "modified", "removed", "relaxed", "tightened"
-    category: str  # "style", "tech_stack", "architecture", "performance", "security"
+    description: str = ""
+    change_type: str = "modified"  # "added", "modified", "removed", "relaxed", "tightened"
+    category: str = "architecture"  # "style", "tech_stack", "architecture", "performance", "security"
     sweep_required: bool = False  # Whether existing files need checking
 
 
 class SpecDiffResponse(BaseModel):
     """Structured analysis of spec changes."""
-    summary: str  # One-paragraph overview of what changed
+    summary: str = ""  # One-paragraph overview of what changed
     feature_changes: list[FeatureChange] = Field(default_factory=list)
     constraint_changes: list[ConstraintChange] = Field(default_factory=list)
     removed_features: list[str] = Field(default_factory=list)
