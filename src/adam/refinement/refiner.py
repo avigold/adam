@@ -101,9 +101,22 @@ class Refiner:
         self._on_round_end = on_round_end
 
     async def refine(self) -> RefinementResult:
-        """Run the refinement loop until healthy or budget exhausted."""
+        """Run the refinement loop until healthy or budget exhausted.
+
+        This method must never crash. All exceptions are caught, logged,
+        and result in a graceful return with whatever progress was made.
+        """
         result = RefinementResult()
 
+        try:
+            return await self._refine_inner(result)
+        except Exception as e:
+            logger.exception("Refinement loop crashed: %s", e)
+            result.stopped_reason = f"crashed: {e}"
+            return result
+
+    async def _refine_inner(self, result: RefinementResult) -> RefinementResult:
+        """Inner refinement loop — separated so refine() can catch crashes."""
         # Initial observation
         observation = await self._observe()
         result.initial_health = observation.health
@@ -260,9 +273,14 @@ class Refiner:
             # Check monitor for trouble — escalate to supervisor
             assessment = monitor.assess()
             if assessment.needs_supervisor:
-                directive = await self._consult_supervisor(
-                    assessment, observation, issue,
-                )
+                try:
+                    directive = await self._consult_supervisor(
+                        assessment, observation, issue,
+                    )
+                except Exception as e:
+                    logger.warning("Supervisor call failed: %s", e)
+                    directive = None
+
                 if directive and directive.action in (
                     "accept_imperfection", "freeze", "abort",
                 ):

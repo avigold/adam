@@ -94,7 +94,22 @@ class Orchestrator:
         return ValidationSuite(hard_validators=hard, soft_critics=soft)
 
     async def run(self, project_id: uuid.UUID) -> OrchestratorResult:
-        """Run the full implementation phase with multi-pass revision."""
+        """Run the full implementation phase with multi-pass revision.
+
+        This method must never crash the process. Unhandled exceptions
+        are caught and returned as a failed result.
+        """
+        try:
+            return await self._run_inner(project_id)
+        except Exception as e:
+            logger.exception("Orchestrator crashed: %s", e)
+            return OrchestratorResult(
+                success=False,
+                error=f"Orchestrator crashed: {e}",
+            )
+
+    async def _run_inner(self, project_id: uuid.UUID) -> OrchestratorResult:
+        """Inner implementation loop — separated so run() can catch crashes."""
         project = await self._store.get_project_full(project_id)
         if project is None:
             return OrchestratorResult(success=False, error="Project not found")
