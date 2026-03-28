@@ -622,19 +622,67 @@ class Refiner:
     def _extract_code(self, response: str) -> str:
         """Extract source code from an agent response.
 
-        The repair agent should return just code, but sometimes wraps
-        it in markdown fences.
+        The repair agent should return just code, but sometimes:
+        - Wraps it in markdown fences
+        - Prepends a prose explanation before the code
+        - Returns commentary instead of code entirely
+
+        We detect prose by checking if the response starts with
+        natural language rather than code syntax.
         """
         text = response.strip()
 
-        # Strip markdown fences
-        if text.startswith("```"):
-            lines = text.split("\n")
-            # Remove first line (```lang) and last line (```)
-            if lines[-1].strip() == "```":
-                lines = lines[1:-1]
+        # If the response contains a fenced code block, extract it
+        if "```" in text:
+            import re
+            # Find the largest fenced block
+            blocks = re.findall(
+                r"```(?:\w+)?\n(.*?)```", text, re.DOTALL,
+            )
+            if blocks:
+                # Use the longest block (likely the full file)
+                text = max(blocks, key=len).strip()
+                return text
+
+        # Detect prose preamble: if first line doesn't look like code,
+        # find where the code starts
+        lines = text.split("\n")
+        if lines and self._looks_like_prose(lines[0]):
+            # Find the first line that looks like code
+            for i, line in enumerate(lines):
+                if not self._looks_like_prose(line) and line.strip():
+                    text = "\n".join(lines[i:])
+                    break
             else:
-                lines = lines[1:]
-            text = "\n".join(lines)
+                # Entire response is prose — no code found
+                return ""
 
         return text
+
+    @staticmethod
+    def _looks_like_prose(line: str) -> bool:
+        """Heuristic: does this line look like natural language, not code?"""
+        stripped = line.strip()
+        if not stripped:
+            return False
+        # Code typically starts with these
+        code_starts = (
+            "import ", "from ", "export ", "const ", "let ", "var ",
+            "function ", "class ", "interface ", "type ", "enum ",
+            "def ", "async ", "await ", "return ", "if ", "for ",
+            "while ", "try ", "catch ", "switch ", "{", "}", "//",
+            "/*", "#!", "#!/", "@", "<", "package ", "use ",
+            "pub ", "fn ", "struct ", "impl ", "mod ", "crate ",
+        )
+        if stripped.startswith(code_starts):
+            return False
+        # Prose typically starts with capital letter + has spaces
+        # and doesn't contain common code characters at the start
+        if (
+            stripped[0].isupper()
+            and " " in stripped[:30]
+            and not stripped.startswith(("I ", ))
+            and len(stripped) > 40
+        ):
+            return True
+        return False
