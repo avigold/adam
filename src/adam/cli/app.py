@@ -690,44 +690,82 @@ async def _run_refine(
 
 
 def _detect_project_commands(project_dir: Path) -> tuple[str, str, str]:
-    """Detect build, test, and run commands from project files."""
+    """Detect build, test, and run commands from project files.
+
+    Checks the project root first, then common subdirectories
+    (site/, frontend/, client/, web/, app/) for frontend projects.
+    For Python projects, checks if the main package is importable.
+    """
     import json
 
-    build_cmd = ""
-    test_cmd = ""
+    commands: list[str] = []  # build commands to chain
+    test_cmds: list[str] = []
     run_cmd = ""
 
-    # package.json
-    pkg_json = project_dir / "package.json"
-    if pkg_json.is_file():
+    # ── Check for package.json (root and subdirs) ──
+    candidates = [project_dir]
+    for subdir in ("site", "frontend", "client", "web", "ui"):
+        sub = project_dir / subdir
+        if sub.is_dir():
+            candidates.append(sub)
+
+    for candidate in candidates:
+        pkg_json = candidate / "package.json"
+        if not pkg_json.is_file():
+            continue
         try:
             pkg = json.loads(pkg_json.read_text(encoding="utf-8"))
             scripts = pkg.get("scripts", {})
-            if scripts.get("build"):
-                build_cmd = "npm run build"
-            if scripts.get("test"):
-                test_cmd = "npm test"
-            if scripts.get("dev"):
-                run_cmd = "npm run dev"
         except (json.JSONDecodeError, KeyError):
-            pass
+            continue
 
-    # pyproject.toml
+        # Determine prefix for subdirectory commands
+        if candidate == project_dir:
+            prefix = ""
+        else:
+            rel = candidate.relative_to(project_dir)
+            prefix = f"cd {rel} && "
+
+        if scripts.get("build"):
+            commands.append(f"{prefix}npm run build")
+        if scripts.get("test"):
+            test_cmds.append(f"{prefix}npm test")
+        if scripts.get("dev") and not run_cmd:
+            run_cmd = f"{prefix}npm run dev"
+
+    # ── Check for Python project ──
     pyproject = project_dir / "pyproject.toml"
-    if pyproject.is_file() and not test_cmd:
-        test_cmd = "pytest"
+    if pyproject.is_file():
+        # Find the main package to verify imports
+        for pkg_dir in ("app", "src"):
+            init = project_dir / pkg_dir / "__init__.py"
+            main = project_dir / pkg_dir / "main.py"
+            if init.is_file() or main.is_file():
+                module = pkg_dir
+                # Check for a main.py that can be import-tested
+                if main.is_file():
+                    commands.append(
+                        f"python -c \"import {module}.main\""
+                    )
+                break
+        if not test_cmds:
+            test_cmds.append("pytest")
 
-    # Cargo.toml
+    # ── Check for Cargo.toml ──
     cargo = project_dir / "Cargo.toml"
-    if cargo.is_file() and not build_cmd:
-        build_cmd = "cargo build"
-        test_cmd = "cargo test"
+    if cargo.is_file():
+        commands.append("cargo build")
+        test_cmds.append("cargo test")
 
-    # go.mod
+    # ── Check for go.mod ──
     gomod = project_dir / "go.mod"
-    if gomod.is_file() and not build_cmd:
-        build_cmd = "go build ./..."
-        test_cmd = "go test ./..."
+    if gomod.is_file():
+        commands.append("go build ./...")
+        test_cmds.append("go test ./...")
+
+    # Chain multiple build commands
+    build_cmd = " && ".join(commands) if commands else ""
+    test_cmd = " && ".join(test_cmds) if test_cmds else ""
 
     return build_cmd, test_cmd, run_cmd
 
