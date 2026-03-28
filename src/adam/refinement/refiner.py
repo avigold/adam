@@ -95,7 +95,7 @@ class Refiner:
         self._config = config or RefinementConfig()
         self._runner = ShellRunner()
         self._git = GitManager(project_root, self._runner)
-        self._observer = Observer(project_root, self._runner)
+        self._observer = Observer(project_root, self._runner, llm=llm)
         self._snapshots = SnapshotManager(self._git)
         self._on_round_start = on_round_start
         self._on_round_end = on_round_end

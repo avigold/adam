@@ -596,7 +596,7 @@ class Orchestrator:
                 return True
 
             errors = build_result.output
-            error_files = self._parse_build_errors(errors)
+            error_files = await self._parse_build_errors(errors, build_cmd)
 
             if not error_files:
                 logger.warning(
@@ -705,17 +705,54 @@ class Orchestrator:
         )
         return False
 
-    def _parse_build_errors(
-        self, errors: str,
+    async def _parse_build_errors(
+        self, errors: str, build_cmd: str = "",
     ) -> dict[str, list[str]]:
-        """Parse compiler output to find affected files and their errors."""
+        """Parse compiler output to find affected files and their errors.
+
+        Uses the Opus build analyser for language-agnostic parsing,
+        falls back to regex for common patterns.
+        """
+        # Try LLM-powered analysis first
+        try:
+            from adam.agents.build_analyser import BuildAnalyser, BuildAnalysis
+
+            analyser = BuildAnalyser(self._llm)
+            from adam.cli.display import thinking
+            async with thinking("Analysing build errors"):
+                result = await analyser.execute(AgentContext(
+                    error_output=errors[:8000],
+                    extra={"build_command": build_cmd},
+                ))
+
+            if result.success and isinstance(result.parsed, BuildAnalysis):
+                error_files: dict[str, list[str]] = {}
+                for error in result.parsed.errors:
+                    if error.file_path:
+                        error_files.setdefault(error.file_path, []).append(
+                            error.suggested_fix or error.summary
+                        )
+                if error_files:
+                    return error_files
+        except Exception as e:
+            logger.warning("Build analyser failed, using regex: %s", e)
+
+        # Regex fallback — multi-language patterns
         import re
-        error_files: dict[str, list[str]] = {}
+        error_files = {}
+        patterns = [
+            r"(src/[^\s:(]+\.\w+)[:(]",  # src/foo.ts(12,5) or src/foo.py:12
+            r"([^\s:(]+\.(?:ts|tsx|js|jsx|py|rs|go)):(\d+)",  # file.ext:line
+            r'File "([^"]+\.py)"',  # Python traceback
+            r"--> ([^\s:]+\.\w+):",  # Rust
+        ]
         for line in errors.split("\n"):
-            match = re.match(r"(src/[^\s:(]+\.ts)[:(]", line)
-            if match:
-                fpath = match.group(1)
-                error_files.setdefault(fpath, []).append(line.strip())
+            for pattern in patterns:
+                match = re.search(pattern, line)
+                if match:
+                    fpath = match.group(1)
+                    error_files.setdefault(fpath, []).append(line.strip())
+                    break
         return error_files
 
     async def _per_file_build_repair(
@@ -1165,9 +1202,10 @@ class Orchestrator:
                     "path": r.path,
                     "name": r.name,
                     "description": r.description,
-                    "actions": [a.model_dump() for a in r.actions]
-                    if hasattr(r.actions[0], "model_dump") and r.actions
-                    else r.actions,
+                    "actions": [
+                        a.model_dump() if hasattr(a, "model_dump") else a
+                        for a in r.actions
+                    ] if r.actions else [],
                 }
                 for r in result.parsed.routes
             ]

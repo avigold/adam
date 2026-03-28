@@ -91,9 +91,11 @@ class Observer:
         self,
         project_root: str | Path,
         runner: ShellRunner | None = None,
+        llm: object | None = None,
     ) -> None:
         self._root = str(project_root)
         self._runner = runner or ShellRunner()
+        self._llm = llm  # LLMClient, if available — enables Opus build analysis
 
     async def observe(
         self,
@@ -116,8 +118,9 @@ class Observer:
                 build_cmd, cwd=self._root,
             )
             if not build_result.success:
-                build_issues = self._parse_build_errors(
-                    build_result.output
+                build_issues = await self._analyse_errors(
+                    build_result.output, build_cmd,
+                    HealthLevel.DOES_NOT_BUILD,
                 )
                 issues.extend(build_issues)
 
@@ -147,8 +150,9 @@ class Observer:
                 test_cmd, cwd=self._root,
             )
             if not test_result.success:
-                test_issues = self._parse_test_errors(
-                    test_result.output
+                test_issues = await self._analyse_errors(
+                    test_result.output, test_cmd,
+                    HealthLevel.TESTS_FAILING,
                 )
                 issues.extend(test_issues)
 
@@ -168,68 +172,136 @@ class Observer:
             issues=issues,
         )
 
-    def _parse_build_errors(self, output: str) -> list[Issue]:
-        """Extract individual build errors with file paths."""
+    async def _analyse_errors(
+        self, output: str, command: str, level: HealthLevel,
+    ) -> list[Issue]:
+        """Analyse build/test output using Opus if available, regex fallback."""
+        if self._llm is not None:
+            issues = await self._llm_analyse(output, command, level)
+            if issues:
+                return issues
+
+        # Fallback: regex-based parsing
+        return self._regex_parse_errors(output, level)
+
+    async def _llm_analyse(
+        self, output: str, command: str, level: HealthLevel,
+    ) -> list[Issue]:
+        """Use the Opus build analyser to parse errors from any language."""
+        try:
+            from adam.agents.build_analyser import BuildAnalyser, BuildAnalysis
+            from adam.types import AgentContext
+
+            analyser = BuildAnalyser(self._llm)
+
+            from adam.cli.display import thinking
+            async with thinking("Analysing build output"):
+                result = await analyser.execute(AgentContext(
+                    error_output=output[:8000],
+                    extra={
+                        "build_command": command,
+                    },
+                ))
+
+            if not result.success or not isinstance(result.parsed, BuildAnalysis):
+                logger.warning("Build analyser failed: %s", result.error)
+                return []
+
+            analysis = result.parsed
+            issues: list[Issue] = []
+            seen: set[str] = set()
+
+            for error in analysis.errors:
+                key = f"{error.file_path}:{error.line_number}:{error.summary}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                issues.append(Issue(
+                    level=level,
+                    summary=error.suggested_fix or error.summary,
+                    file_path=error.file_path,
+                    error_output=error.root_cause or error.summary,
+                    line_number=error.line_number,
+                ))
+
+            if not issues and output.strip():
+                issues.append(Issue(
+                    level=level,
+                    summary=analysis.root_cause_summary or "Build/test failed",
+                    error_output=output[:2000],
+                ))
+
+            return issues
+
+        except Exception as e:
+            logger.warning("LLM analysis failed, falling back to regex: %s", e)
+            return []
+
+    def _regex_parse_errors(
+        self, output: str, level: HealthLevel,
+    ) -> list[Issue]:
+        """Regex fallback for common error patterns across languages."""
         import re
         issues: list[Issue] = []
         seen: set[str] = set()
 
-        for line in output.split("\n"):
-            # TypeScript: src/foo.ts(12,5): error TS2345: ...
-            match = re.match(
-                r"(src/[^\s:(]+)\((\d+),\d+\):\s*error\s+(.*)", line
-            )
-            if not match:
-                # Alternative: src/foo.ts:12:5 - error TS2345: ...
-                match = re.match(
-                    r"(src/[^\s:(]+):(\d+):\d+\s*-?\s*error\s+(.*)", line
-                )
-            if match:
-                fpath = match.group(1)
-                line_num = int(match.group(2))
-                msg = match.group(3).strip()
-                key = f"{fpath}:{line_num}:{msg}"
-                if key not in seen:
-                    seen.add(key)
-                    issues.append(Issue(
-                        level=HealthLevel.DOES_NOT_BUILD,
-                        summary=msg,
-                        file_path=fpath,
-                        error_output=line.strip(),
-                        line_number=line_num,
-                    ))
+        # TypeScript: src/foo.ts(12,5): error TS2345: ...
+        # TypeScript: src/foo.ts:12:5 - error TS2345: ...
+        # Python: File "app/main.py", line 12, in <module>
+        # Rust: error[E0308]: mismatched types --> src/main.rs:12:5
+        # Go: ./main.go:12:5: undefined: foo
+        # General: file.ext:line:col: error message
 
-        # If we couldn't parse individual errors, create one generic issue
+        patterns = [
+            # TypeScript style 1
+            (r"(src/[^\s:(]+)\((\d+),\d+\):\s*error\s+(.*)", None),
+            # TypeScript style 2 / general
+            (r"([^\s:(]+\.(?:ts|tsx|js|jsx|py|rs|go)):(\d+):\d+\s*[-:]?\s*(?:error\s*)?(.*)", None),
+            # Python traceback
+            (r'File "([^"]+)", line (\d+)', "Python error"),
+            # Rust
+            (r"--> ([^\s:]+):(\d+):\d+", None),
+            # Python ModuleNotFoundError / ImportError
+            (r"(ModuleNotFoundError|ImportError):\s*(.*)", None),
+        ]
+
+        for line in output.split("\n"):
+            for pattern, default_msg in patterns:
+                match = re.match(pattern, line.strip())
+                if not match:
+                    match = re.search(pattern, line.strip())
+                if match:
+                    groups = match.groups()
+                    if len(groups) >= 2:
+                        fpath = groups[0]
+                        try:
+                            line_num = int(groups[1])
+                        except (ValueError, IndexError):
+                            line_num = 0
+                        msg = groups[2].strip() if len(groups) > 2 else (
+                            default_msg or line.strip()
+                        )
+                    else:
+                        fpath = ""
+                        line_num = 0
+                        msg = " ".join(groups)
+
+                    key = f"{fpath}:{line_num}:{msg[:80]}"
+                    if key not in seen:
+                        seen.add(key)
+                        issues.append(Issue(
+                            level=level,
+                            summary=msg[:200],
+                            file_path=fpath,
+                            error_output=line.strip(),
+                            line_number=line_num,
+                        ))
+                    break
+
         if not issues and output.strip():
             issues.append(Issue(
-                level=HealthLevel.DOES_NOT_BUILD,
-                summary="Build failed (could not parse individual errors)",
-                error_output=output[:2000],
-            ))
-
-        return issues
-
-    def _parse_test_errors(self, output: str) -> list[Issue]:
-        """Extract individual test failures."""
-        import re
-        issues: list[Issue] = []
-
-        # Look for common test failure patterns
-        # Vitest: FAIL src/foo.test.ts > test name
-        for match in re.finditer(
-            r"FAIL\s+(src/[^\s>]+)", output
-        ):
-            fpath = match.group(1).strip()
-            issues.append(Issue(
-                level=HealthLevel.TESTS_FAILING,
-                summary=f"Test failed in {fpath}",
-                file_path=fpath,
-            ))
-
-        if not issues and "FAIL" in output:
-            issues.append(Issue(
-                level=HealthLevel.TESTS_FAILING,
-                summary="Tests failing",
+                level=level,
+                summary="Build/test failed (could not parse individual errors)",
                 error_output=output[:2000],
             ))
 

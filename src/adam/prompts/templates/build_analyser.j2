@@ -1,0 +1,55 @@
+## Build Command
+
+{{ build_command }}
+
+## Build Output
+
+```
+{{ build_output }}
+```
+
+{% if project_description %}
+## Project Context
+
+{{ project_description }}
+{% endif %}
+
+{% if tech_stack %}
+## Tech Stack
+
+{% for key, val in tech_stack.items() %}
+- **{{ key }}**: {{ val }}
+{% endfor %}
+{% endif %}
+
+{% if file_listing %}
+## Project Files
+
+```
+{{ file_listing }}
+```
+{% endif %}
+
+## Instructions
+
+Analyse the build output above. For each distinct error:
+
+1. **file_path**: The source file that needs to be changed to fix this error. Use the exact path from the output. If the error is in a test file but the fix belongs in the source file, use the source file path. Leave empty only if truly unidentifiable.
+
+2. **line_number**: The line number if shown in the output. 0 if unknown.
+
+3. **error_type**: One of: import, type, syntax, runtime, test, config, dependency, lint, other
+
+4. **summary**: One-line description of the error.
+
+5. **root_cause**: What's actually wrong. This may differ from the error message — e.g., "Module 'app.core.config' doesn't exist; the settings module is at 'app.config.settings'" is more useful than "ModuleNotFoundError: No module named 'app.core.config'".
+
+6. **suggested_fix**: Specific instruction for what to change. E.g., "Change `from app.core.config import settings` to `from app.config.settings import Settings`".
+
+7. **is_root_cause**: Set to false if this error is a downstream symptom of another error in your list. For example, if file A has a wrong export and files B, C, D all fail to import from it, only A is the root cause.
+
+Also provide:
+- **root_cause_summary**: One paragraph explaining the fundamental problem(s)
+- **fix_order**: File paths in the order they should be fixed (root causes first, then dependents)
+
+Return a JSON object matching the BuildAnalysis schema.
