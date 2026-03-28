@@ -323,11 +323,40 @@ class ContextLoader:
         content = parts[2].strip()
 
         frontmatter: dict[str, Any] = {}
+        current_key: str | None = None
+        current_list: list[str] | None = None
+
         for line in fm_text.split("\n"):
-            line = line.strip()
-            if ":" in line:
-                key, _, val = line.partition(":")
-                frontmatter[key.strip()] = val.strip()
+            stripped = line.strip()
+
+            # YAML list item (e.g., "  - foo")
+            if stripped.startswith("- ") and current_key is not None:
+                if current_list is None:
+                    current_list = []
+                current_list.append(stripped[2:].strip())
+                continue
+
+            # Flush any accumulated list
+            if current_list is not None and current_key is not None:
+                frontmatter[current_key] = current_list
+                current_list = None
+                current_key = None
+
+            # Key: value line
+            if ":" in stripped:
+                key, _, val = stripped.partition(":")
+                key = key.strip()
+                val = val.strip()
+                if val:
+                    frontmatter[key] = val
+                    current_key = None
+                else:
+                    # Value is empty — next lines may be a YAML list
+                    current_key = key
+
+        # Flush final list
+        if current_list is not None and current_key is not None:
+            frontmatter[current_key] = current_list
 
         return content, frontmatter
 
