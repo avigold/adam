@@ -364,16 +364,57 @@ class Refiner:
             return await self._fix_known_file(issue, observation)
         return await self._fix_unknown_location(issue, observation)
 
+    def _resolve_file_path(self, reported_path: str) -> tuple[Path, str]:
+        """Resolve a file path from build output to an actual file on disk.
+
+        Build commands like 'cd site && npm run build' produce errors
+        with paths relative to 'site/', not the project root. This
+        tries the path as-is first, then prefixes with subdirectories
+        extracted from the build command.
+        """
+        # Try as-is
+        candidate = Path(self._root) / reported_path
+        if candidate.is_file():
+            return candidate, reported_path
+
+        # Extract subdirectories from build command (cd site && ...)
+        import re
+        for cmd in (self._config.build_cmd, self._config.test_cmd):
+            match = re.search(r"cd\s+(\S+)\s*&&", cmd)
+            if match:
+                subdir = match.group(1)
+                candidate = Path(self._root) / subdir / reported_path
+                if candidate.is_file():
+                    resolved = f"{subdir}/{reported_path}"
+                    logger.info(
+                        "Resolved path: %s → %s", reported_path, resolved,
+                    )
+                    return candidate, resolved
+
+        # Try common frontend subdirectories
+        for subdir in ("site", "frontend", "client", "web", "ui", "app"):
+            candidate = Path(self._root) / subdir / reported_path
+            if candidate.is_file():
+                resolved = f"{subdir}/{reported_path}"
+                logger.info(
+                    "Resolved path: %s → %s", reported_path, resolved,
+                )
+                return candidate, resolved
+
+        return Path(self._root) / reported_path, reported_path
+
     async def _fix_known_file(
         self,
         issue: Issue,
         observation: Observation,
     ) -> list[str]:
         """Fix an issue in a known file."""
-        file_path = Path(self._root) / issue.file_path
+        file_path, resolved_path = self._resolve_file_path(issue.file_path)
         if not file_path.is_file():
             logger.warning("Issue file not found: %s", issue.file_path)
             return []
+        # Update the issue's file_path to the resolved version
+        issue.file_path = resolved_path
 
         source_code = file_path.read_text(encoding="utf-8")
 
