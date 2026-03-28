@@ -1,6 +1,6 @@
 [project]
 name = "adam-cli"
-version = "0.4.3"
+version = "0.5.0"
 description = "Orchestrated long-form software engineering system"
 readme = "README.md"
 authors = [
