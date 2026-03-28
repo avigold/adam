@@ -28,6 +28,7 @@ from adam.inspection.evaluator import VisualEvaluator
 from adam.inspection.screenshotter import PageSpec, Screenshotter
 from adam.llm.client import LLMClient
 from adam.orchestrator.file_loop import FileLoop, FileLoopResult
+from adam.orchestrator.monitor import MonitorAssessment, ProgressMonitor, RoundOutcome, TroubleSignal
 from adam.orchestrator.obligations import ObligationTracker
 from adam.orchestrator.policies import ImplementationPolicy
 from adam.orchestrator.stop_conditions import evaluate_stop_conditions
@@ -561,9 +562,14 @@ class Orchestrator:
         Phase 2 (rounds 3+): Opus sees ALL errors and ALL affected
         source files at once, produces coordinated fixes.
 
+        The progress monitor watches for thrashing. If it detects
+        stagnation, oscillation, or regression, the Opus supervisor
+        decides what to do: change approach, accept, skip, etc.
+
         Returns True if the build passes, False if max rounds exhausted.
         """
 
+        monitor = ProgressMonitor(stagnation_threshold=3)
         prev_error_count = None
 
         for round_num in range(max_rounds):
@@ -592,6 +598,57 @@ class Orchestrator:
             logger.info(
                 "Build errors in %d file(s)", error_count,
             )
+
+            # Record outcome for the monitor
+            monitor.record(RoundOutcome(
+                round_number=round_num + 1,
+                error_count=error_count,
+                files_affected=list(error_files.keys()),
+                action_taken=(
+                    "holistic_repair" if round_num >= 2
+                    else "per_file_repair"
+                ),
+                result=f"{error_count} files with errors",
+            ))
+
+            # Check if the monitor sees trouble
+            assessment = monitor.assess()
+            if assessment.needs_supervisor:
+                directive = await self._consult_supervisor(
+                    assessment, errors,
+                    current_file=list(error_files.keys())[0],
+                    phase="build_repair",
+                    monitor=monitor,
+                )
+                if directive:
+                    if directive.action in (
+                        "accept_imperfection", "freeze", "abort",
+                    ):
+                        logger.info(
+                            "Supervisor: %s — %s",
+                            directive.action, directive.reasoning,
+                        )
+                        break
+                    elif directive.action == "skip_and_return":
+                        logger.info(
+                            "Supervisor: skipping build repair, "
+                            "will address in implementation"
+                        )
+                        break
+                    elif directive.action == "change_approach":
+                        logger.info(
+                            "Supervisor: changing approach — %s",
+                            directive.new_instruction or directive.reasoning,
+                        )
+                        # Force holistic repair with the new instruction
+                        fixed = await self._holistic_build_repair(
+                            errors, error_files,
+                            extra_instruction=directive.new_instruction,
+                        )
+                        if fixed == 0:
+                            break
+                        prev_error_count = error_count
+                        continue
 
             # Detect oscillation — if error count isn't decreasing,
             # switch to Opus immediately
@@ -707,10 +764,82 @@ class Orchestrator:
 
         return files_fixed
 
+    async def _consult_supervisor(
+        self,
+        assessment: MonitorAssessment,
+        current_error: str,
+        current_file: str = "",
+        phase: str = "",
+        monitor: ProgressMonitor | None = None,
+    ) -> object | None:
+        """Escalate to the Opus supervisor for a strategic decision.
+
+        Returns a Directive, or None if the supervisor call fails.
+        """
+        from adam.agents.supervisor import Supervisor, SupervisorResponse
+
+        logger.info(
+            "Consulting supervisor: %s (confidence=%.2f)",
+            assessment.signal.value, assessment.confidence,
+        )
+
+        supervisor = Supervisor(self._llm)
+
+        # Get project description if available
+        project_desc = ""
+        tech_stack: dict = {}
+        try:
+            # Try to get from the store
+            from sqlalchemy import select
+            from adam.models.core import Project
+            result = await self._session.execute(
+                select(Project).limit(1)
+            )
+            project = result.scalar_one_or_none()
+            if project:
+                project_desc = project.description or ""
+                tech_stack = project.tech_stack or {}
+        except Exception:
+            pass
+
+        from adam.cli.display import thinking
+        async with thinking("Reflecting on approach"):
+            result = await supervisor.execute(AgentContext(
+                project_description=project_desc,
+                tech_stack=tech_stack,
+                error_output=current_error[:3000],
+                extra={
+                    "trouble_signal": assessment.signal.value,
+                    "signal_evidence": assessment.evidence,
+                    "monitor_summary": (
+                        monitor.summary() if monitor else {}
+                    ),
+                    "current_file": current_file,
+                    "current_error": current_error[:2000],
+                    "phase": phase,
+                },
+            ))
+
+        if result.success and isinstance(result.parsed, SupervisorResponse):
+            directive = result.parsed.directive
+            logger.info(
+                "Supervisor directive: %s — %s (confidence=%.2f)",
+                directive.action,
+                directive.reasoning[:100],
+                directive.confidence,
+            )
+            for obs in result.parsed.observations:
+                logger.info("Supervisor observation: %s", obs)
+            return directive
+
+        logger.warning("Supervisor call failed: %s", result.error)
+        return None
+
     async def _holistic_build_repair(
         self,
         full_errors: str,
         error_files: dict[str, list[str]],
+        extra_instruction: str = "",
     ) -> int:
         """Opus fixes files one at a time but sees ALL errors.
 
@@ -733,16 +862,23 @@ class Orchestrator:
             # Read files this file imports from
             related = self._read_imports(fpath, source)
 
+            instruction = (
+                "Fix the build errors in this file. "
+                "Here are the errors for THIS file:\n"
+                f"{file_error_text}\n\n"
+                "Here are ALL build errors across the "
+                "project (for context — so you understand "
+                "what other files expect):\n"
+                f"{full_errors[:4000]}"
+            )
+            if extra_instruction:
+                instruction += (
+                    f"\n\nADDITIONAL GUIDANCE FROM SUPERVISOR:\n"
+                    f"{extra_instruction}"
+                )
+
             repair_spec = RepairSpec(
-                instruction=(
-                    "Fix the build errors in this file. "
-                    "Here are the errors for THIS file:\n"
-                    f"{file_error_text}\n\n"
-                    "Here are ALL build errors across the "
-                    "project (for context — so you understand "
-                    "what other files expect):\n"
-                    f"{full_errors[:4000]}"
-                ),
+                instruction=instruction,
                 diagnosis=(
                     f"TypeScript build failed across "
                     f"{len(error_files)} files. "

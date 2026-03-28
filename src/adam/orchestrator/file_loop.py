@@ -23,6 +23,7 @@ from adam.agents.repair_agent import RepairAgent, RepairSpec
 from adam.agents.test_writer import TestWriter
 from adam.execution.runner import ShellRunner
 from adam.llm.client import LLMClient
+from adam.orchestrator.monitor import ProgressMonitor, RoundOutcome
 from adam.orchestrator.policies import ImplementationPolicy
 from adam.repair.planner import RepairPlanner
 from adam.types import AgentContext, ScoreVectorData, ValidationResult, scores_from_validation
@@ -102,6 +103,10 @@ class FileLoop:
         best_scores: ScoreVectorData | None = None
         all_results: list[ValidationResult] = []
         all_cross_file_affected: list[str] = []
+        monitor = ProgressMonitor(
+            stagnation_threshold=3,
+            max_rounds_per_file=self._policy.max_repair_rounds,
+        )
 
         for round_num in range(self._policy.max_repair_rounds):
             logger.info("Validation round %d for %s", round_num + 1, file_path)
@@ -159,6 +164,54 @@ class FileLoop:
                 "Repairing %s: %s (priority=%d)",
                 file_path, top_action.target_dimension, top_action.priority.value,
             )
+
+            # Record for monitor — count hard failures as "errors"
+            hard_failures = sum(
+                1 for r in all_results
+                if r.is_hard and r.passed is not None and not r.passed
+            )
+            monitor.record(RoundOutcome(
+                round_number=round_num + 1,
+                error_count=hard_failures,
+                files_affected=[file_path],
+                action_taken=f"repair:{top_action.target_dimension}",
+                result=(
+                    f"{hard_failures} hard failures, "
+                    f"composite={scores.composite:.2f}"
+                ),
+            ))
+
+            # Check for trouble — but only after round 2
+            # (give it a chance to make initial progress)
+            if round_num >= 2:
+                assessment = monitor.assess()
+                if assessment.needs_supervisor:
+                    logger.info(
+                        "File loop monitor: %s for %s — %s",
+                        assessment.signal.value,
+                        file_path,
+                        assessment.evidence,
+                    )
+                    # For file-level issues, don't call Opus supervisor
+                    # (too expensive per file). Instead, apply heuristic:
+                    if assessment.signal in (
+                        assessment.signal.STAGNATION,
+                        assessment.signal.OSCILLATION,
+                    ):
+                        logger.info(
+                            "Accepting %s at current quality "
+                            "(monitor detected %s)",
+                            file_path, assessment.signal.value,
+                        )
+                        return await self._accept_file(
+                            context, code, scores, all_results,
+                            round_num, generate_tests,
+                            warnings=[
+                                f"Accepted early: {assessment.signal.value} "
+                                f"detected — {assessment.evidence}"
+                            ],
+                            also_affected=all_cross_file_affected,
+                        )
 
             # Get error output for context
             error_output = "\n".join(

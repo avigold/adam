@@ -1,0 +1,71 @@
+## Situation
+
+The automated development system has been flagged by its progress monitor.
+
+**Trouble signal:** {{ trouble_signal }}
+**Evidence:** {{ signal_evidence }}
+**Phase:** {{ phase }}
+
+{% if current_file %}
+**Currently working on:** {{ current_file }}
+{% endif %}
+
+{% if current_error %}
+**Current error:**
+```
+{{ current_error }}
+```
+{% endif %}
+
+## Project Context
+
+{{ project_description }}
+
+{% if tech_stack %}
+**Tech stack:** {% for key, val in tech_stack.items() %}{{ key }}: {{ val }}{% if not loop.last %}, {% endif %}{% endfor %}
+{% endif %}
+
+## Trajectory
+
+{% if monitor_summary.error_trajectory %}
+**Error counts over time:** {{ monitor_summary.error_trajectory }}
+{% endif %}
+
+{% if monitor_summary.files_with_most_attempts %}
+**Files with most repair attempts:**
+{% for file, count in monitor_summary.files_with_most_attempts %}
+- {{ file }}: {{ count }} attempt(s)
+{% endfor %}
+{% endif %}
+
+{% if monitor_summary.recent_actions %}
+**Recent actions:**
+{% for action in monitor_summary.recent_actions %}
+- Round {{ action.round }}: {{ action.action }} → {{ action.result }} ({{ action.errors }} errors)
+{% endfor %}
+{% endif %}
+
+**Total rounds so far:** {{ monitor_summary.total_rounds | default(0) }}
+**Current error count:** {{ monitor_summary.current_error_count | default('?') }}
+
+## Your Decision
+
+Based on the trajectory above, what should the system do?
+
+Think about:
+1. Is the error count trending in the right direction at all?
+2. Has the same file been repaired many times without success?
+3. Could the problem be in a different file than the one being targeted?
+4. Is the current repair approach fundamentally wrong for this type of issue?
+5. Would it be more productive to work on something else and come back?
+6. Is this an issue that simply can't be fixed automatically?
+
+Return a JSON object with:
+- `assessment`: One paragraph explaining what you see
+- `directive`: An object with:
+  - `action`: One of: continue, skip_and_return, change_approach, reframe, accept_imperfection, freeze, question_test, restructure, abort
+  - `reasoning`: Why you chose this action
+  - `target_files`: Files affected by your decision (if applicable)
+  - `new_instruction`: If action is change_approach, what should be tried instead
+  - `confidence`: 0.0-1.0
+- `observations`: List of notable things you noticed in the trajectory

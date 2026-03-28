@@ -1,0 +1,87 @@
+## Project
+
+{{ project_description }}
+
+{% if tech_stack %}
+## Technology Stack
+
+{% for key, val in tech_stack.items() %}
+- **{{ key }}**: {{ val }}
+{% endfor %}
+{% endif %}
+
+{% if conventions %}
+## Conventions
+
+{% for key, val in conventions.items() %}
+- **{{ key }}**: {{ val }}
+{% endfor %}
+{% endif %}
+
+## Spec Change Analysis
+
+{{ spec_diff | tojson(indent=2) }}
+
+{% if existing_modules %}
+## Existing Modules
+
+{% for mod in existing_modules %}
+### {{ mod.name }}
+Purpose: {{ mod.purpose }}
+Files:
+{% for f in mod.files %}
+  - {{ f.path }} — {{ f.purpose }} [{{ f.status }}]
+{% endfor %}
+{% endfor %}
+{% endif %}
+
+{% if existing_files and not existing_modules %}
+## Existing Files
+
+{% for f in existing_files %}
+- {{ f.path }} — {{ f.purpose | default('') }} [{{ f.status | default('unknown') }}]
+{% endfor %}
+{% endif %}
+
+{% if existing_obligations %}
+## Current Obligations
+
+{% for ob in existing_obligations %}
+- [{{ ob.status }}] {{ ob.description }}
+  {% if ob.implementing_files %}Implemented by: {{ ob.implementing_files | join(', ') }}{% endif %}
+{% endfor %}
+{% endif %}
+
+## Instructions
+
+Based on the spec change analysis above, produce a concrete file-level plan:
+
+1. **Files to create**: New source files needed to implement added features. For each:
+   - `path`: Full file path following existing conventions
+   - `module`: Which module it belongs to (existing or new)
+   - `purpose`: What this file does
+   - `dependencies`: Other files it depends on
+   - `implements`: Which feature changes from the analysis it addresses
+   - `priority`: 1 (highest) to 10 (lowest)
+
+2. **Files to modify**: Existing files that need changes. For each:
+   - `path`: The existing file path
+   - `purpose`: What specifically needs to change (be precise)
+   - `implements`: Which feature changes this addresses
+
+3. **Files to delete**: Existing files that are no longer needed (only if they serve no other purpose).
+
+4. **Obligations**: New obligations to create, existing ones to update or close.
+
+5. **Implementation order**: File paths in the order they should be implemented (dependencies first).
+
+6. **New dependencies**: Any npm/pip/cargo packages that need to be added.
+
+Important:
+- Prefer modifying existing files over creating new ones
+- Don't plan changes to files that aren't affected by the spec changes
+- Respect the existing module structure
+- Order by dependency: implement what others depend on first
+- For modifications, describe the specific change, not just "update"
+
+Return your plan as a JSON object matching the ChangePlanResponse schema.

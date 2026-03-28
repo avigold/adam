@@ -1,0 +1,80 @@
+## Project
+
+{{ project_description }}
+
+{% if tech_stack %}
+## Technology Stack
+
+{% for key, val in tech_stack.items() %}
+- **{{ key }}**: {{ val }}
+{% endfor %}
+{% endif %}
+
+{% if existing_modules %}
+## Existing Modules
+
+{% for mod in existing_modules %}
+- **{{ mod.name }}**: {{ mod.purpose }} ({{ mod.file_count }} files)
+{% endfor %}
+{% endif %}
+
+{% if existing_obligations %}
+## Current Obligations
+
+{% for ob in existing_obligations %}
+- [{{ ob.status }}] {{ ob.description }}
+{% endfor %}
+{% endif %}
+
+## Previous Specification
+
+{% if old_spec %}
+```
+{{ old_spec }}
+```
+{% else %}
+No previous specification on record. Treat all content in the new specification as new.
+{% endif %}
+
+## Current Specification
+
+```
+{{ new_spec }}
+```
+
+{% if other_changes %}
+## Other Changed Context Files
+
+{% for change in other_changes %}
+### {{ change.path }} ({{ change.change_type }})
+
+Type: {{ change.context_type }}
+
+{% if change.content %}
+```
+{{ change.content }}
+```
+{% else %}
+(File was removed)
+{% endif %}
+{% endfor %}
+{% endif %}
+
+## Instructions
+
+Analyse the differences between the previous and current specifications. Identify:
+
+1. **Feature changes**: What features were added, modified, or removed? For each, assess:
+   - The scope: "local" (single file change), "module" (multiple files in one area), or "architectural" (structural/cross-cutting)
+   - The priority: "critical" (blocks other work), "high" (important), "normal" (standard), "low" (nice to have)
+   - Which areas of the codebase are likely affected
+
+2. **Constraint changes**: What non-functional requirements changed? Style conventions, tech stack preferences, performance targets, security requirements. For each, note whether existing files need to be swept for compliance.
+
+3. **Removed features**: What was explicitly removed or deprecated?
+
+4. **Migration notes**: Any special considerations — breaking changes, data migrations, dependency additions/removals.
+
+5. **Estimated scope**: Overall, is this a "minor" change (a few files), "moderate" (a module or two), "major" (significant rework), or "rewrite" (fundamental restructuring)?
+
+Return your analysis as a JSON object matching the SpecDiffResponse schema.

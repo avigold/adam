@@ -146,6 +146,16 @@ class ProjectStore:
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def find_file_by_path(self, project_id: uuid.UUID, path: str) -> File | None:
+        """Find a file by path across all modules in a project."""
+        stmt = (
+            select(File)
+            .join(Module, File.module_id == Module.id)
+            .where(Module.project_id == project_id, File.path == path)
+        )
+        result = await self._session.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def update_file(
         self, project_id: uuid.UUID, file_id: uuid.UUID, **kwargs: Any
     ) -> File | None:

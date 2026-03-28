@@ -82,7 +82,7 @@ async def _check_scaffold_build(
         )
 
 
-@click.command()
+@click.group(invoke_without_command=True)
 @click.option("--project-dir", type=click.Path(exists=True), default=".")
 @click.option("--context-dir", type=click.Path(exists=False), default=None)
 @click.option(
@@ -96,7 +96,9 @@ async def _check_scaffold_build(
     "--no-checkpoints", is_flag=True, default=False,
     help="Skip human approval checkpoints (architecture review etc.)",
 )
+@click.pass_context
 def cli(
+    ctx: click.Context,
     project_dir: str = ".",
     context_dir: str | None = None,
     profile: str | None = None,
@@ -108,8 +110,41 @@ def cli(
     log_dir = Path(project_dir) / ".adam"
     log_dir.mkdir(parents=True, exist_ok=True)
     setup_logging(debug=debug, log_file=log_dir / "adam.log")
-    asyncio.run(_run(
-        Path(project_dir), context_dir, profile, debug, no_checkpoints,
+
+    # Store shared options for subcommands
+    ctx.ensure_object(dict)
+    ctx.obj["project_dir"] = Path(project_dir)
+    ctx.obj["context_dir"] = context_dir
+    ctx.obj["profile"] = profile
+    ctx.obj["debug"] = debug
+    ctx.obj["no_checkpoints"] = no_checkpoints
+
+    # If no subcommand, run the default flow
+    if ctx.invoked_subcommand is None:
+        asyncio.run(_run(
+            Path(project_dir), context_dir, profile, debug, no_checkpoints,
+        ))
+
+
+@cli.command()
+@click.argument("instructions", nargs=-1)
+@click.pass_context
+def iterate(ctx: click.Context, instructions: tuple[str, ...]) -> None:
+    """Iterate on an existing project — update spec, add features, refine.
+
+    If context files have changed, Adam analyses the delta and plans
+    incremental work. If no changes are detected, asks what you'd like
+    to change.
+
+    You can pass instructions directly:
+        adam iterate add user authentication with JWT
+    """
+    project_dir: Path = ctx.obj["project_dir"]
+    profile: str | None = ctx.obj["profile"]
+    user_text = " ".join(instructions) if instructions else ""
+
+    asyncio.run(_run_iterate(
+        project_dir, ctx.obj["context_dir"], profile, user_text,
     ))
 
 
@@ -145,11 +180,43 @@ async def _handle_existing(
     console.print(f"Found project: [bold]{state.title}[/bold] ({state.phase})")
 
     if state.phase == "complete":
+        # Check for context file changes
+        from adam.context.fingerprint import ContextFingerprinter
+        fingerprinter = ContextFingerprinter(project_dir)
+        if fingerprinter.has_stored_state():
+            loader = ContextLoader(project_dir / "context")
+            current_files = loader.load()
+            diff = fingerprinter.diff(current_files)
+            if diff.has_changes:
+                console.print(
+                    f"\n[bold]Context changes detected:[/bold] "
+                    f"{diff.summary()}"
+                )
+                choice = Prompt.ask(
+                    "Would you like to iterate on this project?",
+                    choices=["iterate", "new", "quit"],
+                    default="iterate",
+                )
+                if choice == "iterate":
+                    await _run_iterate(
+                        project_dir, None, profile_name, "",
+                    )
+                    return
+                elif choice == "new":
+                    if Confirm.ask("Start a new project?"):
+                        await _handle_new(project_dir, None, profile_name)
+                    return
+                else:
+                    return
+
         choice = Prompt.ask(
             "Project is complete. What would you like to do?",
-            choices=["revise", "new", "quit"],
+            choices=["iterate", "new", "quit"],
             default="quit",
         )
+        if choice == "iterate":
+            await _run_iterate(project_dir, None, profile_name, "")
+            return
     else:
         choice = Prompt.ask(
             "What would you like to do?",
@@ -248,6 +315,7 @@ async def _handle_existing(
 
             if result.success:
                 update_phase(project_dir, "complete")
+                _save_context_fingerprints(project_dir)
             else:
                 update_phase(project_dir, "testing")
 
@@ -384,7 +452,183 @@ async def _handle_new(
                 "\n[bold yellow]Some files need attention.[/bold yellow]"
             )
 
+        # Save context fingerprints so future runs detect changes
+        _save_context_fingerprints(project_dir, context_dir=None)
+
         # Token usage summary
+        show_token_usage(llm.budget.summary())
+        show_info(f"Full log: {project_dir / '.adam' / 'adam.log'}")
+
+    await engine.dispose()
+
+
+def _save_context_fingerprints(
+    project_dir: Path,
+    context_dir: Path | None = None,
+) -> None:
+    """Save context file fingerprints after a successful run."""
+    from adam.context.fingerprint import ContextFingerprinter
+
+    ctx_dir = context_dir or project_dir / "context"
+    if not ctx_dir.is_dir():
+        return
+
+    loader = ContextLoader(ctx_dir)
+    files = loader.load()
+    if files:
+        fp = ContextFingerprinter(project_dir)
+        fp.save(files)
+        fp.save_content_snapshot(files)
+
+
+async def _run_iterate(
+    project_dir: Path,
+    context_dir: str | None,
+    profile_name: str | None,
+    user_instructions: str,
+) -> None:
+    """Run the iterate flow — incremental development on existing projects."""
+    from adam.context.fingerprint import ContextFingerprinter
+    from adam.pipeline.iterate import IterateStage
+
+    banner()
+
+    state = detect_project(project_dir)
+    if state is None:
+        console.print(
+            "[red]No project found. Run `adam` first to create one.[/red]"
+        )
+        return
+
+    console.print(
+        f"Project: [bold]{state.title}[/bold] ({state.phase})"
+    )
+
+    # Load context and detect changes
+    ctx_dir = Path(context_dir) if context_dir else project_dir / "context"
+    loader = ContextLoader(ctx_dir)
+    current_files = loader.load()
+
+    fingerprinter = ContextFingerprinter(project_dir)
+    context_diff = fingerprinter.diff(current_files)
+
+    if context_diff.has_changes:
+        show_phase("Context Changes Detected")
+        show_info(context_diff.summary())
+    elif not user_instructions:
+        # No context changes and no CLI instructions — ask interactively
+        show_phase("Iterate")
+        show_info(
+            "No context file changes detected. "
+            "What would you like to change?"
+        )
+        user_instructions = Prompt.ask(
+            "\n[bold]Describe what you'd like to add, change, or fix[/bold]"
+        )
+        if not user_instructions.strip():
+            show_info("Nothing to do.")
+            return
+
+    # Run the iterate stage
+    settings = Settings()
+    if profile_name:
+        from adam.profiles import apply_profile
+        apply_profile(profile_name, settings.orchestrator, settings.llm)
+
+    engine = get_engine(settings, project_dir=str(project_dir))
+    await init_db(engine)
+
+    async with get_session(engine=engine) as session:
+        llm = LLMClient(settings.llm)
+
+        iterate_stage = IterateStage(llm, project_dir)
+        result = await iterate_stage.run(
+            session=session,
+            project_id=uuid.UUID(state.project_id),
+            context_diff=context_diff,
+            current_files=current_files,
+            user_instructions=user_instructions,
+        )
+
+        if not result.success:
+            console.print(f"[red]Iterate failed: {result.error}[/red]")
+            await engine.dispose()
+            return
+
+        if not result.has_work:
+            show_info("Analysis complete — no file changes needed.")
+            await engine.dispose()
+            return
+
+        # Show the plan
+        show_phase("Change Plan")
+        if result.spec_diff:
+            show_info(f"Scope: {result.spec_diff.estimated_scope}")
+            show_info(f"Feature changes: {len(result.spec_diff.feature_changes)}")
+            if result.spec_diff.migration_notes:
+                show_info(f"Notes: {result.spec_diff.migration_notes}")
+
+        if result.change_plan:
+            if result.change_plan.files_to_create:
+                show_info(
+                    f"Files to create: "
+                    f"{len(result.change_plan.files_to_create)}"
+                )
+                for pf in result.change_plan.files_to_create:
+                    show_info(f"  + {pf.path}")
+            if result.change_plan.files_to_modify:
+                show_info(
+                    f"Files to modify: "
+                    f"{len(result.change_plan.files_to_modify)}"
+                )
+                for pf in result.change_plan.files_to_modify:
+                    show_info(f"  ~ {pf.path}: {pf.purpose}")
+            if result.change_plan.files_to_delete:
+                show_info(
+                    f"Files to delete: "
+                    f"{len(result.change_plan.files_to_delete)}"
+                )
+
+        show_info(
+            f"Obligations: {result.new_obligations} new, "
+            f"{result.closed_obligations} closed"
+        )
+        show_info(f"Files marked pending: {len(result.files_marked_pending)}")
+
+        # Now run construction on the pending files
+        show_phase(
+            "Implementation",
+            "Writing code, running tests, repairing failures...",
+        )
+
+        policy = ImplementationPolicy(
+            max_repair_rounds=settings.orchestrator.max_repair_rounds,
+            acceptance_threshold=settings.orchestrator.acceptance_threshold,
+            run_soft_critics=settings.orchestrator.run_soft_critics,
+            visual_inspection=settings.orchestrator.visual_inspection,
+        )
+        orchestrator = Orchestrator(
+            llm=llm,
+            session=session,
+            project_root=str(project_dir),
+            policy=policy,
+            on_file_complete=_on_file,
+        )
+        orch_result = await orchestrator.run(uuid.UUID(state.project_id))
+        show_orchestrator_result(orch_result)
+
+        if orch_result.success:
+            update_phase(project_dir, "complete")
+            console.print("\n[bold green]Iteration complete![/bold green]")
+        else:
+            update_phase(project_dir, "testing")
+            console.print(
+                "\n[bold yellow]Some files need attention.[/bold yellow]"
+            )
+
+        # Save updated fingerprints
+        _save_context_fingerprints(project_dir, ctx_dir)
+
         show_token_usage(llm.budget.summary())
         show_info(f"Full log: {project_dir / '.adam' / 'adam.log'}")
 
