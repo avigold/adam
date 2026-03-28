@@ -138,6 +138,34 @@ def cli(
 
 
 @cli.command()
+@click.option("--build-cmd", default="", help="Build command (auto-detected if not set)")
+@click.option("--test-cmd", default="", help="Test command (auto-detected if not set)")
+@click.option("--run-cmd", default="", help="Run/start command (auto-detected if not set)")
+@click.option("--max-rounds", default=15, help="Maximum fix attempts")
+@click.pass_context
+def fix(
+    ctx: click.Context,
+    build_cmd: str,
+    test_cmd: str,
+    run_cmd: str,
+    max_rounds: int,
+) -> None:
+    """Fix a project that doesn't build, crashes, or has failing tests.
+
+    Runs the observe-fix-verify loop: check what's broken, fix the top
+    issue, verify the fix didn't make things worse, repeat.
+
+    No spec analysis, no planning — just targeted repair.
+    """
+    project_dir: Path = ctx.obj["project_dir"]
+    profile: str | None = ctx.obj["profile"]
+
+    asyncio.run(_run_fix(
+        project_dir, profile, build_cmd, test_cmd, run_cmd, max_rounds,
+    ))
+
+
+@cli.command()
 @click.argument("instructions", nargs=-1)
 @click.pass_context
 def iterate(ctx: click.Context, instructions: tuple[str, ...]) -> None:
@@ -486,6 +514,102 @@ async def _handle_new(
         show_info(f"Full log: {project_dir / '.adam' / 'adam.log'}")
 
     await engine.dispose()
+
+
+async def _run_fix(
+    project_dir: Path,
+    profile_name: str | None,
+    build_cmd: str,
+    test_cmd: str,
+    run_cmd: str,
+    max_rounds: int,
+) -> None:
+    """Run the fix loop — observe, fix, verify, repeat."""
+    from adam.refinement.refiner import Refiner, RefinementConfig
+
+    banner()
+
+    # Auto-detect commands if not provided
+    if not build_cmd and not test_cmd:
+        detected_build, detected_test, detected_run = _detect_project_commands(
+            project_dir,
+        )
+        build_cmd = build_cmd or detected_build
+        test_cmd = test_cmd or detected_test
+        run_cmd = run_cmd or detected_run
+
+    if not build_cmd and not test_cmd:
+        console.print(
+            "[red]No build or test commands detected. "
+            "Use --build-cmd or --test-cmd.[/red]"
+        )
+        return
+
+    show_phase("Fix", "Observing → fixing → verifying...")
+    if build_cmd:
+        show_info(f"Build: {build_cmd}")
+    if test_cmd:
+        show_info(f"Test: {test_cmd}")
+    if run_cmd:
+        show_info(f"Run: {run_cmd}")
+
+    settings = Settings()
+    if profile_name:
+        apply_profile(profile_name, settings.orchestrator, settings.llm)
+
+    llm = LLMClient(settings.llm)
+
+    config = RefinementConfig(
+        max_rounds=max_rounds,
+        build_cmd=build_cmd,
+        run_cmd=run_cmd,
+        test_cmd=test_cmd,
+    )
+
+    def on_round_start(
+        round_num: int, observation: object, issue: object,
+    ) -> None:
+        from adam.refinement.observe import Issue, Observation
+        if isinstance(observation, Observation) and isinstance(issue, Issue):
+            console.print(
+                f"\n  [bold]Round {round_num}[/bold] "
+                f"[dim]({observation.health.name}, "
+                f"{observation.issue_count} issues)[/dim]"
+            )
+            console.print(f"  Fixing: {issue.summary[:80]}")
+            if issue.file_path:
+                console.print(f"  File: [cyan]{issue.file_path}[/cyan]")
+
+    def on_round_end(
+        round_num: int, improved: bool, reverted: bool,
+    ) -> None:
+        if reverted:
+            console.print(
+                f"  [yellow]Reverted[/yellow] — fix made things worse"
+            )
+        elif improved:
+            console.print(f"  [green]Committed[/green]")
+
+    refiner = Refiner(
+        llm=llm,
+        project_root=project_dir,
+        config=config,
+        on_round_start=on_round_start,
+        on_round_end=on_round_end,
+    )
+
+    result = await refiner.refine()
+    show_refinement_result(result)
+
+    if result.final_health.name == "FULLY_HEALTHY":
+        console.print("\n[bold green]Project is healthy![/bold green]")
+    else:
+        console.print(
+            f"\n[bold yellow]Health: {result.final_health.name} "
+            f"({result.final_issue_count} issues remaining)[/bold yellow]"
+        )
+
+    show_token_usage(llm.budget.summary())
 
 
 async def _run_refine(
