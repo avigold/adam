@@ -59,5 +59,6 @@ Also provide:
 
 - **root_cause_summary**: One paragraph explaining the fundamental problem(s)
 - **fix_order**: File paths in the order they should be fixed (root causes first, then dependents)
+- **batch_fix_confidence**: 0.0 to 1.0 — how confident are you that ALL errors listed above could be fixed in a single pass, with a repair agent fixing each file once? High confidence (>0.7) means the errors are straightforward type mismatches, wrong imports, missing exports, or other mechanical issues. Low confidence (<0.4) means the errors are tangled, architectural, or require reasoning about multiple files simultaneously.
 
 Return a JSON object matching the BuildAnalysis schema.

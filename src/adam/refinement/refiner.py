@@ -115,6 +115,14 @@ class Refiner:
             result.stopped_reason = "already healthy"
             return result
 
+        # ── Try batch fix first if the analyser is confident ──
+        observation = await self._try_batch_fix(observation, result)
+        if observation.health == HealthLevel.FULLY_HEALTHY:
+            result.final_health = observation.health
+            result.final_issue_count = 0
+            result.stopped_reason = "batch fix resolved all issues"
+            return result
+
         consecutive_reverts = 0
         stagnation_count = 0
         last_health = observation.health
@@ -292,6 +300,146 @@ class Refiner:
         result.final_health = observation.health
         result.final_issue_count = observation.issue_count
         return result
+
+    async def _try_batch_fix(
+        self,
+        observation: Observation,
+        result: RefinementResult,
+    ) -> Observation:
+        """Attempt to fix all issues in one pass if confidence is high.
+
+        The build analyser returns batch_fix_confidence. If >= 0.7,
+        we fix every identified file in one go. If the build is worse
+        after, revert and return the original observation — the caller
+        falls through to the one-at-a-time loop.
+        """
+        if not observation.issues:
+            return observation
+
+        # Run the build analyser to get confidence
+        analysis = await self._get_batch_analysis(observation)
+        if analysis is None:
+            return observation
+
+        confidence = getattr(analysis, "batch_fix_confidence", 0.0)
+        if confidence < 0.7:
+            logger.info(
+                "Batch fix confidence %.2f < 0.7 — using one-at-a-time",
+                confidence,
+            )
+            return observation
+
+        logger.info(
+            "Batch fix confidence %.2f — attempting to fix %d errors "
+            "in one pass",
+            confidence, len(analysis.errors),
+        )
+
+        # Snapshot before batch
+        snapshot = await self._snapshots.take("batch fix attempt")
+
+        # Fix every file the analyser identified
+        fixed_files: list[str] = []
+        for error in analysis.errors:
+            if not error.file_path or not error.suggested_fix:
+                continue
+
+            file_path, resolved = self._resolve_file_path(error.file_path)
+            if not file_path.is_file():
+                continue
+
+            source = file_path.read_text(encoding="utf-8")
+
+            repair_spec = RepairSpec(
+                instruction=error.suggested_fix,
+                diagnosis=error.root_cause or error.summary,
+            )
+            related = self._read_imports(source, resolved)
+
+            agent = RepairAgent(
+                llm=self._llm,
+                source_code=source,
+                repair_spec=repair_spec,
+            )
+            ctx = AgentContext(
+                error_output=error.summary,
+                related_files=related,
+                file_spec={"path": resolved},
+            )
+
+            from adam.cli.display import thinking
+            async with thinking(f"Batch fixing {resolved}"):
+                repair_result = await agent.execute(ctx)
+
+            if repair_result.success and repair_result.raw_response:
+                fixed_code = self._extract_code(repair_result.raw_response)
+                if fixed_code and fixed_code.strip() != source.strip():
+                    file_path.write_text(fixed_code, encoding="utf-8")
+                    fixed_files.append(resolved)
+                    logger.info("Batch fixed: %s", resolved)
+
+        if not fixed_files:
+            logger.info("Batch fix produced no changes")
+            return observation
+
+        # Re-observe
+        new_observation = await self._observe()
+
+        if new_observation.is_worse_than(observation):
+            logger.info(
+                "Batch fix made things worse (%s→%s, %d→%d issues) "
+                "— reverting to one-at-a-time",
+                observation.health.name, new_observation.health.name,
+                observation.issue_count, new_observation.issue_count,
+            )
+            await self._snapshots.revert(snapshot)
+            return observation
+
+        # Batch fix helped — commit
+        await self._snapshots.commit_fix(
+            f"batch fix: {len(fixed_files)} files",
+            fixed_files,
+        )
+        result.fixes_committed += len(fixed_files)
+        result.issues_fixed.append(
+            f"Batch fix: {', '.join(f[:40] for f in fixed_files[:5])}"
+        )
+        logger.info(
+            "Batch fix committed: %d files, health %s→%s, issues %d→%d",
+            len(fixed_files),
+            observation.health.name, new_observation.health.name,
+            observation.issue_count, new_observation.issue_count,
+        )
+        return new_observation
+
+    async def _get_batch_analysis(
+        self, observation: Observation,
+    ) -> Any:
+        """Get the build analysis with confidence score."""
+        try:
+            from adam.agents.build_analyser import BuildAnalyser, BuildAnalysis
+
+            analyser = BuildAnalyser(self._llm)
+            error_text = (
+                observation.build_output
+                or observation.test_output
+                or "\n".join(i.error_output for i in observation.issues[:10])
+            )
+
+            from adam.cli.display import thinking
+            async with thinking("Assessing batch fix feasibility"):
+                result = await analyser.execute(AgentContext(
+                    error_output=error_text[:8000],
+                    extra={
+                        "build_command": self._config.build_cmd,
+                    },
+                ))
+
+            if result.success and isinstance(result.parsed, BuildAnalysis):
+                return result.parsed
+        except Exception as e:
+            logger.warning("Batch analysis failed: %s", e)
+        return None
 
     async def _consult_supervisor(
         self,

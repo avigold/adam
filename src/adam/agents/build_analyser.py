@@ -46,6 +46,7 @@ class BuildAnalysis(BaseModel):
     commands_to_run: list[SetupCommand] = Field(default_factory=list)  # Shell commands needed before/instead of file edits
     root_cause_summary: str = ""  # High-level: what's fundamentally wrong
     fix_order: list[str] = Field(default_factory=list)  # File paths in recommended fix order
+    batch_fix_confidence: float = 0.0  # 0-1: confidence that ALL errors can be fixed in one pass
     notes: Any = ""
 
 
