@@ -135,6 +135,33 @@ class Refiner:
             if self._on_round_start:
                 self._on_round_start(round_num, observation, issue)
 
+            # If the observation itself ran setup commands (npm install etc.),
+            # that IS the fix for this round — don't try to edit files too.
+            # Just re-observe to see the new state.
+            if observation.setup_commands_ran:
+                logger.info(
+                    "Round %d: setup commands ran during observation, "
+                    "re-observing to see new state",
+                    round_num,
+                )
+                new_observation = await self._observe()
+                # Setup commands are always progress — don't revert
+                consecutive_reverts = 0
+                result.fixes_committed += 1
+                result.issues_fixed.append(
+                    "Environment setup (installed dependencies)"
+                )
+                observation = new_observation
+                result.rounds_completed = round_num
+
+                if self._on_round_end:
+                    self._on_round_end(round_num, True, False)
+
+                if observation.health == HealthLevel.FULLY_HEALTHY:
+                    result.stopped_reason = "fully healthy"
+                    break
+                continue
+
             # Snapshot before attempting fix
             snapshot = await self._snapshots.take(
                 f"round {round_num}: {issue.summary[:60]}"

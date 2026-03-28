@@ -47,6 +47,7 @@ class Observation:
     runtime_output: str = ""
     test_output: str = ""
     screenshot_path: str = ""
+    setup_commands_ran: bool = False  # Whether env setup commands were executed
 
     @property
     def top_issue(self) -> Issue | None:
@@ -68,19 +69,40 @@ class Observation:
         )
 
     def is_better_than(self, other: Observation) -> bool:
-        """Is this observation strictly better than the other?"""
+        """Is this observation strictly better than the other?
+
+        Health level is the primary signal. A higher health level is
+        always better, regardless of issue count — going from
+        "can't find the compiler" (1 issue) to "compiler found 26
+        type errors" (26 issues) is progress.
+
+        When health levels are equal, fewer issues is better.
+        Setup commands running is always considered progress.
+        """
         if self.health > other.health:
             return True
         if self.health == other.health:
-            return self.issue_count < other.issue_count
+            if self.issue_count < other.issue_count:
+                return True
+            # Setup commands running is progress even if issue count rose
+            if self.setup_commands_ran and not other.setup_commands_ran:
+                return True
         return False
 
     def is_worse_than(self, other: Observation) -> bool:
-        """Is this observation strictly worse?"""
+        """Is this observation strictly worse?
+
+        Only worse if health level dropped. Issue count increasing
+        at the same health level is NOT necessarily worse — it may
+        mean we progressed past a blocker and found more real errors.
+
+        We are conservative here: only revert if health level
+        actually decreased. Increasing issue count at the same level
+        is treated as neutral (not worse), allowing the refiner to
+        continue rather than revert.
+        """
         if self.health < other.health:
             return True
-        if self.health == other.health:
-            return self.issue_count > other.issue_count
         return False
 
 
@@ -96,6 +118,7 @@ class Observer:
         self._root = str(project_root)
         self._runner = runner or ShellRunner()
         self._llm = llm  # LLMClient, if available — enables Opus build analysis
+        self._setup_commands_ran = False
 
     async def observe(
         self,
@@ -128,6 +151,7 @@ class Observer:
                     health=HealthLevel.DOES_NOT_BUILD,
                     issues=issues,
                     build_output=build_result.output,
+                    setup_commands_ran=self._setup_commands_ran,
                 )
 
         # Level 1-2: Does it run?
@@ -239,8 +263,15 @@ class Observer:
                 if recheck.success:
                     logger.info("Build passes after running setup commands")
                     return []  # No issues — commands fixed it
-                # Update output for further analysis
+                # Update output and re-analyse the NEW errors
+                # (don't return the old "tsc not found" errors)
                 output = recheck.output
+                logger.info(
+                    "Setup commands ran but build still fails — "
+                    "re-analysing new errors"
+                )
+                # Mark that we ran commands (affects is_worse_than logic)
+                self._setup_commands_ran = True
 
             for error in analysis.errors:
                 key = f"{error.file_path}:{error.line_number}:{error.summary}"
