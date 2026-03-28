@@ -48,6 +48,8 @@ logger = logging.getLogger(__name__)
 
 # Callback: (result, current_index, total_files) -> None
 type OnFileComplete = Callable[[FileLoopResult, int, int], None]
+# Callback: (file_path, current_index, total_files, is_revision) -> None
+type OnFileStart = Callable[[str, int, int, bool], None]
 
 
 class Orchestrator:
@@ -60,6 +62,7 @@ class Orchestrator:
         project_root: str = ".",
         policy: ImplementationPolicy | None = None,
         on_file_complete: OnFileComplete | None = None,
+        on_file_start: OnFileStart | None = None,
     ) -> None:
         self._llm = llm
         self._session = session
@@ -71,6 +74,7 @@ class Orchestrator:
         self._git = GitManager(project_root, self._runner)
         self._obligations = ObligationTracker(session)
         self._on_file_complete = on_file_complete
+        self._on_file_start = on_file_start
         self._suite = self._build_validation_suite()
 
     def _build_validation_suite(self) -> ValidationSuite:
@@ -239,6 +243,12 @@ class Orchestrator:
                         "[%d/%d] %s: %s",
                         processed, total_files, action, file_rec.path,
                     )
+
+                    if self._on_file_start:
+                        self._on_file_start(
+                            file_rec.path, processed,
+                            total_files, is_revision,
+                        )
 
                     ctx = await self._slicer.build_file_context(
                         project_id, module.id, file_rec.id

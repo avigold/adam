@@ -42,6 +42,22 @@ console = Console()
 logger = logging.getLogger(__name__)
 
 
+def _on_file_start(
+    file_path: str, current: int, total: int, is_revision: bool,
+) -> None:
+    """Callback: display a status line when a file starts processing."""
+    import random
+    from adam.cli.display import _THINKING_VERBS
+
+    verb = random.choice(_THINKING_VERBS)
+    action = "Revising" if is_revision else "Implementing"
+    console.print(
+        f"  [dim][{current}/{total}][/dim] "
+        f"[bold]{action}[/bold] {file_path} "
+        f"[dim italic]({verb})[/dim italic]"
+    )
+
+
 def _on_file(result: object, current: int, total: int) -> None:
     """Callback: display each file result as the orchestrator completes it."""
     from adam.orchestrator.file_loop import FileLoopResult
@@ -310,6 +326,7 @@ async def _handle_existing(
                 project_root=str(project_dir),
                 policy=policy,
                 on_file_complete=_on_file,
+                on_file_start=_on_file_start,
             )
             result = await orchestrator.run(uuid.UUID(state.project_id))
             show_orchestrator_result(result)
