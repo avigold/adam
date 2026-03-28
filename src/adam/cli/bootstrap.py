@@ -174,10 +174,22 @@ def _extract_prefilled(
                 prefilled["title"] = fm["title"]
             if "features" in fm:
                 raw = fm["features"]
-                if isinstance(raw, str):
+                if isinstance(raw, list):
                     prefilled["features"] = [
-                        f.strip() for f in raw.split(",") if f.strip()
+                        str(f).strip() for f in raw if str(f).strip()
                     ]
+                elif isinstance(raw, str):
+                    # Handle both comma-separated and "- item" list format
+                    if "\n" in raw or raw.strip().startswith("-"):
+                        prefilled["features"] = [
+                            line.strip().lstrip("- ").strip()
+                            for line in raw.split("\n")
+                            if line.strip() and line.strip() != "-"
+                        ]
+                    else:
+                        prefilled["features"] = [
+                            f.strip() for f in raw.split(",") if f.strip()
+                        ]
 
         # Tech stack files → tech_stack dict
         elif cf.context_type == ContextType.TECH_STACK:
