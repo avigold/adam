@@ -490,6 +490,8 @@ class Refiner:
                         "total_rounds": assessment.rounds_in_trouble,
                         "error_trajectory": assessment.trajectory,
                         "current_error_count": observation.issue_count,
+                        "files_with_most_attempts": [],
+                        "recent_actions": [],
                     },
                     "current_file": issue.file_path if issue else "",
                     "current_error": error_text[:2000],
