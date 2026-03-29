@@ -137,15 +137,24 @@ class Refiner:
             return result
 
         # ── Primary: tool-use fix agent (Opus with read/edit/run tools) ──
-        # Loop until healthy, no progress, or max attempts
+        # Loop until healthy, no progress, or max attempts.
+        # Always loop if the agent made changes — issue count may
+        # increase as blockers are removed and real errors appear.
+        consecutive_no_change = 0
         for tool_attempt in range(5):
-            prev_issues = observation.issue_count
+            prev_health = observation.health
             tool_fix_result = await self._tool_fix(observation, result)
 
             if not tool_fix_result:
-                logger.info("Tool fix made no changes — moving to fallback")
-                break
+                consecutive_no_change += 1
+                if consecutive_no_change >= 2:
+                    logger.info(
+                        "Tool fix made no changes twice — moving to fallback"
+                    )
+                    break
+                continue
 
+            consecutive_no_change = 0
             observation = await self._observe()
             if observation.health == HealthLevel.FULLY_HEALTHY:
                 result.final_health = observation.health
@@ -153,18 +162,20 @@ class Refiner:
                 result.stopped_reason = "tool fix resolved all issues"
                 return result
 
-            # If no improvement, stop looping
-            if observation.issue_count >= prev_issues:
+            # Only stop if health level dropped (true regression)
+            if observation.health < prev_health:
                 logger.info(
-                    "Tool fix didn't reduce issues (%d→%d) — "
+                    "Tool fix caused health regression (%s→%s) — "
                     "moving to fallback",
-                    prev_issues, observation.issue_count,
+                    prev_health.name, observation.health.name,
                 )
                 break
 
             logger.info(
-                "Tool fix reduced issues %d→%d, running again",
-                prev_issues, observation.issue_count,
+                "Tool fix session %d complete, health=%s issues=%d, "
+                "continuing",
+                tool_attempt + 1, observation.health.name,
+                observation.issue_count,
             )
 
         # ── Fallback: one-at-a-time loop ──
