@@ -136,17 +136,15 @@ class Refiner:
             result.stopped_reason = "already healthy"
             return result
 
-        # ── Primary: Opus FixAgent (read → think → edit) ──
-        for fix_round in range(3):  # Up to 3 direct fix rounds
-            observation = await self._direct_fix(observation, result)
+        # ── Primary: tool-use fix agent (Opus with read/edit/run tools) ──
+        tool_fix_result = await self._tool_fix(observation, result)
+        if tool_fix_result:
+            observation = await self._observe()
             if observation.health == HealthLevel.FULLY_HEALTHY:
                 result.final_health = observation.health
                 result.final_issue_count = 0
-                result.stopped_reason = "direct fix resolved all issues"
+                result.stopped_reason = "tool fix resolved all issues"
                 return result
-            # If no progress was made, stop trying direct fix
-            if result.fixes_committed == 0 and fix_round > 0:
-                break
 
         # ── Fallback: one-at-a-time loop ──
         consecutive_reverts = 0
@@ -331,6 +329,93 @@ class Refiner:
         result.final_health = observation.health
         result.final_issue_count = observation.issue_count
         return result
+
+    async def _tool_fix(
+        self,
+        observation: Observation,
+        result: RefinementResult,
+    ) -> bool:
+        """Run the tool-use fix agent — Opus with read/edit/run tools.
+
+        This is the primary fix mechanism. The model explores the
+        project and fixes errors autonomously, same as Claude Code.
+        Returns True if any fixes were applied.
+        """
+        from adam.refinement.tool_fix import ToolFixAgent
+
+        error_text = (
+            observation.build_output
+            or observation.test_output
+            or "\n".join(i.error_output for i in observation.issues[:10])
+        )
+
+        if not error_text.strip():
+            return False
+
+        # Snapshot before the agent makes changes
+        snapshot = await self._snapshots.take("tool fix")
+
+        agent = ToolFixAgent(
+            llm=self._llm,
+            project_root=self._root,
+            runner=self._runner,
+        )
+
+        from adam.cli.display import thinking
+        async with thinking("Working through the problem"):
+            fix_result = await agent.fix(
+                build_cmd=self._config.build_cmd,
+                build_output=error_text[:6000],
+                test_cmd=self._config.test_cmd,
+                test_output=observation.test_output[:4000] if observation.test_output else "",
+            )
+
+        logger.info(
+            "Tool fix: %s (%d turns, %d files, %d+%d tokens)",
+            fix_result.summary[:100],
+            fix_result.turns,
+            len(fix_result.files_modified),
+            fix_result.total_input_tokens,
+            fix_result.total_output_tokens,
+        )
+
+        if fix_result.error:
+            logger.warning("Tool fix error: %s", fix_result.error)
+
+        if not fix_result.files_modified:
+            logger.info("Tool fix made no changes")
+            return False
+
+        # Re-observe to check if things improved
+        new_observation = await self._observe()
+
+        if new_observation.is_worse_than(observation):
+            logger.info(
+                "Tool fix made things worse (%s→%s, %d→%d) — reverting",
+                observation.health.name, new_observation.health.name,
+                observation.issue_count, new_observation.issue_count,
+            )
+            await self._snapshots.revert(snapshot)
+            return False
+
+        # Commit the changes
+        await self._snapshots.commit_fix(
+            f"tool fix: {fix_result.summary[:60]}",
+            fix_result.files_modified,
+        )
+        result.fixes_committed += len(fix_result.files_modified)
+        result.issues_fixed.append(fix_result.summary[:100])
+
+        if self._on_round_end:
+            self._on_round_end(0, True, False)
+
+        logger.info(
+            "Tool fix committed: %d files, health %s→%s, issues %d→%d",
+            len(fix_result.files_modified),
+            observation.health.name, new_observation.health.name,
+            observation.issue_count, new_observation.issue_count,
+        )
+        return True
 
     async def _direct_fix(
         self,
