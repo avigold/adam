@@ -477,18 +477,7 @@ class Refiner:
                 observation.health.name, new_observation.health.name,
                 observation.issue_count, new_observation.issue_count,
             )
-            # Revert edits by swapping find/replace
-            for resolved, find_str, replace_str in reversed(applied_edits):
-                file_path, _ = self._resolve_file_path(resolved)
-                if file_path.is_file():
-                    content = file_path.read_text(encoding="utf-8")
-                    content = content.replace(replace_str, find_str)
-                    file_path.write_text(content, encoding="utf-8")
-            # Revert creates
-            for create in fix.creates:
-                file_path = Path(self._root) / create.file
-                if file_path.is_file():
-                    file_path.unlink()
+            await self._snapshots.revert(snapshot)
             return observation
 
         # Commit
