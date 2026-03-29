@@ -137,14 +137,35 @@ class Refiner:
             return result
 
         # ── Primary: tool-use fix agent (Opus with read/edit/run tools) ──
-        tool_fix_result = await self._tool_fix(observation, result)
-        if tool_fix_result:
+        # Loop until healthy, no progress, or max attempts
+        for tool_attempt in range(5):
+            prev_issues = observation.issue_count
+            tool_fix_result = await self._tool_fix(observation, result)
+
+            if not tool_fix_result:
+                logger.info("Tool fix made no changes — moving to fallback")
+                break
+
             observation = await self._observe()
             if observation.health == HealthLevel.FULLY_HEALTHY:
                 result.final_health = observation.health
                 result.final_issue_count = 0
                 result.stopped_reason = "tool fix resolved all issues"
                 return result
+
+            # If no improvement, stop looping
+            if observation.issue_count >= prev_issues:
+                logger.info(
+                    "Tool fix didn't reduce issues (%d→%d) — "
+                    "moving to fallback",
+                    prev_issues, observation.issue_count,
+                )
+                break
+
+            logger.info(
+                "Tool fix reduced issues %d→%d, running again",
+                prev_issues, observation.issue_count,
+            )
 
         # ── Fallback: one-at-a-time loop ──
         consecutive_reverts = 0
