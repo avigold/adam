@@ -224,6 +224,7 @@ class Observer:
             # Pass the project file listing so Opus can see where files
             # actually live — critical for resolving import paths
             file_listing = self._get_file_listing()
+            env_info = self._get_environment_info()
 
             from adam.cli.display import thinking
             async with thinking("Analysing build output"):
@@ -232,6 +233,7 @@ class Observer:
                     extra={
                         "build_command": command,
                         "file_listing": file_listing,
+                        "environment_info": env_info,
                     },
                 ))
 
@@ -432,6 +434,62 @@ class Observer:
             ))
 
         return issues
+
+    def _get_environment_info(self) -> str:
+        """Gather environment info for the build analyser.
+
+        Includes: Python version, Node version, dependency file contents,
+        installed packages. This lets Opus make informed decisions about
+        dependency management instead of guessing.
+        """
+        import subprocess
+
+        lines: list[str] = []
+        root = Path(self._root)
+
+        # Python version
+        try:
+            result = subprocess.run(
+                ["python3", "--version"],
+                capture_output=True, text=True, timeout=5,
+                cwd=self._root,
+            )
+            lines.append(f"Python: {result.stdout.strip()}")
+        except Exception:
+            lines.append("Python: not detected")
+
+        # Node version
+        try:
+            result = subprocess.run(
+                ["node", "--version"],
+                capture_output=True, text=True, timeout=5,
+            )
+            lines.append(f"Node: {result.stdout.strip()}")
+        except Exception:
+            pass
+
+        # Dependency file contents
+        for dep_file in (
+            "pyproject.toml", "requirements.txt", "setup.py",
+            "package.json", "Cargo.toml", "go.mod",
+        ):
+            # Check root and common subdirs
+            for candidate_dir in [root] + [
+                root / sub for sub in ("site", "frontend", "client", "web")
+                if (root / sub).is_dir()
+            ]:
+                path = candidate_dir / dep_file
+                if path.is_file():
+                    try:
+                        content = path.read_text(encoding="utf-8")
+                        if len(content) > 3000:
+                            content = content[:3000] + "\n[truncated]"
+                        rel = str(path.relative_to(root))
+                        lines.append(f"\n--- {rel} ---\n{content}")
+                    except (OSError, UnicodeDecodeError):
+                        pass
+
+        return "\n".join(lines) if lines else ""
 
     def _get_file_listing(self) -> str:
         """Get a tree-style listing of source files in the project.

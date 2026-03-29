@@ -475,8 +475,9 @@ class Refiner:
             )
 
             from adam.cli.display import thinking
-            # Pass file listing so Opus knows where files actually live
+            # Pass file listing and env info so Opus has full context
             file_listing = self._observer._get_file_listing()
+            env_info = self._observer._get_environment_info()
 
             async with thinking("Assessing batch fix feasibility"):
                 result = await analyser.execute(AgentContext(
@@ -484,6 +485,7 @@ class Refiner:
                     extra={
                         "build_command": self._config.build_cmd,
                         "file_listing": file_listing,
+                        "environment_info": env_info,
                     },
                 ))
 

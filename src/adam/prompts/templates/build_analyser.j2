@@ -30,6 +30,20 @@
 ```
 {% endif %}
 
+{% if environment_info %}
+## Environment & Dependencies
+
+{{ environment_info }}
+
+Use this information to prescribe correct dependency installation commands.
+For Python projects:
+- If pyproject.toml exists, use `pip install -e .` or `pip install -e ".[dev]"`
+- If requirements.txt exists, use `pip install -r requirements.txt`
+- If neither works (e.g., Python version constraint), install packages individually: `pip install fastapi sqlalchemy ...`
+- NEVER prescribe `pip install -r requirements.txt` if the file doesn't exist
+- If pyproject.toml has `requires-python = ">=3.12"` but the environment has 3.11, either relax the constraint or install deps individually
+{% endif %}
+
 ## Instructions
 
 Analyse the build output above. For each distinct error:
