@@ -87,6 +87,20 @@ async def thinking(label: str | None = None) -> AsyncGenerator[None, None]:
     status = console.status(
         f"  {initial}...", spinner="dots", spinner_style="green"
     )
+
+    # Suppress console log output while spinner is active.
+    # Without this, INFO log lines push the spinner text into
+    # the terminal scroll buffer where it becomes permanent.
+    # Log messages still go to the file handler.
+    import logging as _logging
+    _console_handlers = [
+        h for h in _logging.getLogger().handlers
+        if hasattr(h, "console")  # RichHandler
+    ]
+    _saved_levels = [(h, h.level) for h in _console_handlers]
+    for h in _console_handlers:
+        h.setLevel(_logging.WARNING)
+
     status.start()
 
     stop_event = asyncio.Event()
@@ -119,6 +133,11 @@ async def thinking(label: str | None = None) -> AsyncGenerator[None, None]:
         stop_event.set()
         await rotate_task
         status.stop()
+
+        # Restore console log levels
+        for h, level in _saved_levels:
+            h.setLevel(level)
+
         async with _active_spinner_lock:
             _active_spinner_count -= 1
 
