@@ -24,9 +24,9 @@ from adam.types import ModelTier
 logger = logging.getLogger(__name__)
 
 # Maximum turns to prevent runaway conversations
-MAX_TURNS = 30
+MAX_TURNS = 40
 # Maximum total tokens before we stop
-MAX_TOTAL_TOKENS = 200_000
+MAX_TOTAL_TOKENS = 500_000
 
 # Tool definitions for the Anthropic API
 TOOLS: list[dict[str, Any]] = [
@@ -220,21 +220,27 @@ class ToolFixAgent:
             "You are a senior engineer fixing a broken project. "
             "You have tools to read files, edit files, run commands, "
             "and list the project structure.\n\n"
+            "IMPORTANT: Be decisive. Fix quickly. You have a limited "
+            "token budget — if you spend it all reading files without "
+            "making edits, you fail. Prefer action over investigation.\n\n"
             "Your approach:\n"
-            "1. Understand the error from the build output\n"
-            "2. Read the relevant source files\n"
-            "3. Fix the root cause with targeted edits\n"
-            "4. Run the build to verify your fix\n"
-            "5. If new errors appear, fix those too\n"
-            "6. Call 'done' when the build passes or you've done "
-            "everything you can\n\n"
-            "Principles:\n"
-            "- Fix the root cause, not the symptom\n"
-            "- Minimal edits — don't refactor, don't improve\n"
-            "- Verify each fix by running the build\n"
-            "- If you can't fix something, say so in done()\n"
-            f"- Project root: {self._root}\n"
-            f"- Build command: {build_cmd}"
+            "1. Read the error — you often already know what to fix\n"
+            "2. Read ONLY the file(s) that need changing\n"
+            "3. Make the edit immediately\n"
+            "4. Run the build to verify\n"
+            "5. If new errors, fix those too\n"
+            "6. Call 'done' when the build passes\n\n"
+            "Anti-patterns to avoid:\n"
+            "- Reading every file in the project before making any edit\n"
+            "- Running grep to 'understand the full picture' before fixing\n"
+            "- Reading test files when the error is in source files\n"
+            "- Investigating the environment when the error is clearly "
+            "a wrong import path\n\n"
+            "For import errors like 'No module named app.core': just "
+            "grep for the bad import, read the file, fix it. Don't "
+            "explore the whole project first.\n\n"
+            f"Project root: {self._root}\n"
+            f"Build command: {build_cmd}"
         )
 
         # Initial message with the error
