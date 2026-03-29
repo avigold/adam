@@ -23,10 +23,10 @@ from adam.types import ModelTier
 
 logger = logging.getLogger(__name__)
 
-# Maximum turns to prevent runaway conversations
-MAX_TURNS = 40
-# Maximum total tokens before we stop
-MAX_TOTAL_TOKENS = 500_000
+# Maximum turns per fix session — one focused fix, not a marathon
+MAX_TURNS = 15
+# Maximum total tokens per session
+MAX_TOTAL_TOKENS = 100_000
 
 # Tool definitions for the Anthropic API
 TOOLS: list[dict[str, Any]] = [
@@ -220,25 +220,22 @@ class ToolFixAgent:
             "You are a senior engineer fixing a broken project. "
             "You have tools to read files, edit files, run commands, "
             "and list the project structure.\n\n"
-            "IMPORTANT: Be decisive. Fix quickly. You have a limited "
-            "token budget — if you spend it all reading files without "
-            "making edits, you fail. Prefer action over investigation.\n\n"
-            "Your approach:\n"
-            "1. Read the error — you often already know what to fix\n"
-            "2. Read ONLY the file(s) that need changing\n"
-            "3. Make the edit immediately\n"
-            "4. Run the build to verify\n"
-            "5. If new errors, fix those too\n"
-            "6. Call 'done' when the build passes\n\n"
-            "Anti-patterns to avoid:\n"
-            "- Reading every file in the project before making any edit\n"
-            "- Running grep to 'understand the full picture' before fixing\n"
-            "- Reading test files when the error is in source files\n"
-            "- Investigating the environment when the error is clearly "
-            "a wrong import path\n\n"
-            "For import errors like 'No module named app.core': just "
-            "grep for the bad import, read the file, fix it. Don't "
-            "explore the whole project first.\n\n"
+            "CRITICAL RULES:\n"
+            "1. Fix ONE issue per session. The build output shows the "
+            "FIRST error. Fix that ONE error, verify the fix, call done.\n"
+            "2. Do NOT go looking for other issues to fix. After your "
+            "fix works, call done() immediately. A separate session "
+            "will handle remaining issues.\n"
+            "3. Be decisive. Read the error, read the file, make the "
+            "edit, verify. 4-6 tool calls, not 30.\n"
+            "4. When you verify, run the build command. If your specific "
+            "fix worked (the original error is gone), call done() even "
+            "if other errors remain.\n\n"
+            "Anti-patterns that waste budget:\n"
+            "- Reading every file before making any edit\n"
+            "- Fixing additional errors beyond the first one\n"
+            "- Exploring the project structure extensively\n"
+            "- Rewriting test files when the error is a config issue\n\n"
             f"Project root: {self._root}\n"
             f"Build command: {build_cmd}"
         )
