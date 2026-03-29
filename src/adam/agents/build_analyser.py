@@ -92,6 +92,7 @@ class BuildAnalyser(BaseAgent):
             "project_description": context.project_description,
             "tech_stack": context.tech_stack,
             "file_listing": context.extra.get("file_listing", ""),
+            "environment_info": context.extra.get("environment_info", ""),
         }
 
     def _temperature(self) -> float:
