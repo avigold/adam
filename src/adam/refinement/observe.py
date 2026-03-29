@@ -255,6 +255,22 @@ class Observer:
                 for cmd in analysis.commands_to_run:
                     if not cmd.command:
                         continue
+
+                    # Safety: block destructive commands
+                    cmd_lower = cmd.command.lower().strip()
+                    if any(
+                        dangerous in cmd_lower
+                        for dangerous in (
+                            "rm -rf", "rm -r", "rmdir",
+                            "del /", "format", "mkfs",
+                            "drop database", "drop table",
+                        )
+                    ):
+                        logger.warning(
+                            "Blocked destructive command: %s",
+                            cmd.command,
+                        )
+                        continue
                     cwd = self._root
                     if cmd.working_directory:
                         cwd = str(Path(self._root) / cmd.working_directory)
