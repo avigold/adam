@@ -221,12 +221,17 @@ class Observer:
 
             analyser = BuildAnalyser(self._llm)
 
+            # Pass the project file listing so Opus can see where files
+            # actually live — critical for resolving import paths
+            file_listing = self._get_file_listing()
+
             from adam.cli.display import thinking
             async with thinking("Analysing build output"):
                 result = await analyser.execute(AgentContext(
                     error_output=output[:8000],
                     extra={
                         "build_command": command,
+                        "file_listing": file_listing,
                     },
                 ))
 
@@ -427,6 +432,39 @@ class Observer:
             ))
 
         return issues
+
+    def _get_file_listing(self) -> str:
+        """Get a tree-style listing of source files in the project.
+
+        Excludes node_modules, .git, dist, build, __pycache__, .adam.
+        Gives the build analyser the context to resolve import paths.
+        """
+        root = Path(self._root)
+        skip_dirs = {
+            "node_modules", ".git", "dist", "build", "__pycache__",
+            ".adam", ".adam-screenshots", ".venv", "venv", ".next",
+            "coverage", ".nyc_output",
+        }
+        lines: list[str] = []
+        for p in sorted(root.rglob("*")):
+            if not p.is_file():
+                continue
+            # Skip excluded directories
+            parts = p.relative_to(root).parts
+            if any(part in skip_dirs for part in parts):
+                continue
+            # Skip non-source files
+            if p.suffix not in (
+                ".ts", ".tsx", ".js", ".jsx", ".py", ".rs", ".go",
+                ".json", ".toml", ".yaml", ".yml", ".md", ".css",
+                ".html", ".svg",
+            ):
+                continue
+            lines.append(str(p.relative_to(root)))
+            if len(lines) >= 200:
+                lines.append("... (truncated)")
+                break
+        return "\n".join(lines)
 
     async def _check_runtime(
         self, run_cmd: str,
