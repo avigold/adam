@@ -1,0 +1,49 @@
+## Build Command
+
+{{ build_command }}
+
+## Build/Test Output
+
+```
+{{ build_output }}
+```
+
+## Project Files
+
+```
+{{ file_listing }}
+```
+
+{% if environment_info %}
+## Environment
+
+{{ environment_info }}
+{% endif %}
+
+## Affected Source Files
+
+{% for f in affected_files %}
+### {{ f.path }}
+```{{ f.language }}
+{{ f.content }}
+```
+
+{% endfor %}
+
+## Instructions
+
+Fix the errors shown in the build output. Return a JSON object with:
+
+- **assessment**: One paragraph explaining what's wrong
+- **edits**: List of search-and-replace operations. Each edit has:
+  - `file`: path relative to project root (use the paths from the file listing above, not from the build output if they differ)
+  - `find`: the EXACT string to find in the file (copy it precisely from the file content above — same whitespace, same quotes, same indentation)
+  - `replace`: the corrected string
+
+  Keep edits minimal. If fixing an import, the `find` is just the import line, not the whole file. Include enough context in `find` to be unique in the file, but no more.
+
+- **creates**: List of new files to create (rare — only if a file is genuinely missing). Each has `file` and `content`.
+
+- **commands**: Shell commands to run (e.g., `npm install`, `pip install fastapi`). Each has `command`, `working_directory` (relative to project root, empty = root), and `reason`. Never use rm -rf or other destructive commands.
+
+- **confidence**: 0.0-1.0 — how confident are you that applying these edits will fix ALL the errors shown?

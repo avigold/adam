@@ -116,7 +116,15 @@ class Refiner:
             return result
 
     async def _refine_inner(self, result: RefinementResult) -> RefinementResult:
-        """Inner refinement loop — separated so refine() can catch crashes."""
+        """Inner refinement loop — separated so refine() can catch crashes.
+
+        Primary mechanism: the Opus FixAgent reads errors and code
+        together and produces surgical edits in a single call. This
+        is the Claude Code model: read → think → edit.
+
+        Fallback: the old one-at-a-time loop with separate analysis
+        and repair agents, used only when the FixAgent can't solve it.
+        """
         # Initial observation
         observation = await self._observe()
         result.initial_health = observation.health
@@ -128,14 +136,19 @@ class Refiner:
             result.stopped_reason = "already healthy"
             return result
 
-        # ── Try batch fix first if the analyser is confident ──
-        observation = await self._try_batch_fix(observation, result)
-        if observation.health == HealthLevel.FULLY_HEALTHY:
-            result.final_health = observation.health
-            result.final_issue_count = 0
-            result.stopped_reason = "batch fix resolved all issues"
-            return result
+        # ── Primary: Opus FixAgent (read → think → edit) ──
+        for fix_round in range(3):  # Up to 3 direct fix rounds
+            observation = await self._direct_fix(observation, result)
+            if observation.health == HealthLevel.FULLY_HEALTHY:
+                result.final_health = observation.health
+                result.final_issue_count = 0
+                result.stopped_reason = "direct fix resolved all issues"
+                return result
+            # If no progress was made, stop trying direct fix
+            if result.fixes_committed == 0 and fix_round > 0:
+                break
 
+        # ── Fallback: one-at-a-time loop ──
         consecutive_reverts = 0
         stagnation_count = 0
         last_health = observation.health
@@ -318,6 +331,270 @@ class Refiner:
         result.final_health = observation.health
         result.final_issue_count = observation.issue_count
         return result
+
+    async def _direct_fix(
+        self,
+        observation: Observation,
+        result: RefinementResult,
+    ) -> Observation:
+        """Opus reads the errors and code, produces edits directly.
+
+        One call. No handoff. The same reasoning chain that
+        understands the error also produces the fix.
+        """
+        from adam.agents.fix_agent import FixAgent, FixResponse
+
+        # Collect affected file contents from the error traceback
+        affected_files = self._collect_affected_files(observation)
+        if not affected_files:
+            logger.info("No affected files identified — skipping direct fix")
+            return observation
+
+        file_listing = self._observer._get_file_listing()
+        env_info = self._observer._get_environment_info()
+
+        error_text = (
+            observation.build_output
+            or observation.test_output
+            or "\n".join(i.error_output for i in observation.issues[:10])
+        )
+
+        agent = FixAgent(self._llm)
+
+        from adam.cli.display import thinking
+        async with thinking("Working through the problem"):
+            agent_result = await agent.execute(AgentContext(
+                error_output=error_text[:8000],
+                extra={
+                    "build_command": self._config.build_cmd,
+                    "file_listing": file_listing,
+                    "environment_info": env_info,
+                    "affected_files": affected_files,
+                },
+            ))
+
+        if not agent_result.success or not isinstance(
+            agent_result.parsed, FixResponse
+        ):
+            logger.warning("FixAgent failed: %s", agent_result.error)
+            return observation
+
+        fix = agent_result.parsed
+        logger.info(
+            "FixAgent: %d edits, %d creates, %d commands "
+            "(confidence=%.2f)",
+            len(fix.edits), len(fix.creates), len(fix.commands),
+            fix.confidence,
+        )
+        logger.info("Assessment: %s", fix.assessment[:200])
+
+        if not fix.edits and not fix.creates and not fix.commands:
+            logger.info("FixAgent produced no actions")
+            return observation
+
+        # Snapshot before applying
+        snapshot = await self._snapshots.take("direct fix")
+
+        # Apply commands first (npm install, etc.)
+        for cmd in fix.commands:
+            if not cmd.command:
+                continue
+            cmd_lower = cmd.command.lower().strip()
+            if any(d in cmd_lower for d in ("rm -rf", "rm -r", "rmdir")):
+                logger.warning("Blocked destructive command: %s", cmd.command)
+                continue
+            cwd = self._root
+            if cmd.working_directory:
+                cwd = str(Path(self._root) / cmd.working_directory)
+            logger.info("Running: %s (in %s)", cmd.command, cwd)
+            cmd_result = await self._runner.run(
+                cmd.command, cwd=cwd, timeout=120,
+            )
+            if cmd_result.success:
+                logger.info("Command succeeded: %s", cmd.command)
+            else:
+                logger.warning(
+                    "Command failed: %s — %s",
+                    cmd.command, cmd_result.output[:200],
+                )
+
+        # Apply edits
+        applied_edits: list[tuple[str, str, str]] = []  # (file, find, replace)
+        for edit in fix.edits:
+            if not edit.file or not edit.find:
+                continue
+            file_path, resolved = self._resolve_file_path(edit.file)
+            if not file_path.is_file():
+                logger.warning("Edit target not found: %s", edit.file)
+                continue
+
+            content = file_path.read_text(encoding="utf-8")
+            if edit.find not in content:
+                # Try fuzzy match — strip leading/trailing whitespace
+                # from each line and try again
+                stripped_find = edit.find.strip()
+                if stripped_find in content:
+                    edit.find = stripped_find
+                else:
+                    logger.warning(
+                        "Find string not found in %s: %s",
+                        resolved, edit.find[:80],
+                    )
+                    continue
+
+            # Verify uniqueness
+            count = content.count(edit.find)
+            if count > 1:
+                logger.warning(
+                    "Find string appears %d times in %s — applying all",
+                    count, resolved,
+                )
+
+            new_content = content.replace(edit.find, edit.replace)
+            file_path.write_text(new_content, encoding="utf-8")
+            applied_edits.append((resolved, edit.find, edit.replace))
+            logger.info("Applied edit to %s", resolved)
+
+        # Apply creates
+        for create in fix.creates:
+            if not create.file or not create.content:
+                continue
+            file_path = Path(self._root) / create.file
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(create.content, encoding="utf-8")
+            logger.info("Created file: %s", create.file)
+
+        if not applied_edits and not fix.creates:
+            logger.info("No edits applied")
+            return observation
+
+        # Re-observe
+        new_observation = await self._observe()
+
+        if new_observation.is_worse_than(observation):
+            logger.info(
+                "Direct fix made things worse (%s→%s, %d→%d) — reverting",
+                observation.health.name, new_observation.health.name,
+                observation.issue_count, new_observation.issue_count,
+            )
+            # Revert edits by swapping find/replace
+            for resolved, find_str, replace_str in reversed(applied_edits):
+                file_path, _ = self._resolve_file_path(resolved)
+                if file_path.is_file():
+                    content = file_path.read_text(encoding="utf-8")
+                    content = content.replace(replace_str, find_str)
+                    file_path.write_text(content, encoding="utf-8")
+            # Revert creates
+            for create in fix.creates:
+                file_path = Path(self._root) / create.file
+                if file_path.is_file():
+                    file_path.unlink()
+            return observation
+
+        # Commit
+        modified = [e[0] for e in applied_edits] + [c.file for c in fix.creates]
+        await self._snapshots.commit_fix(
+            f"direct fix: {fix.assessment[:60]}",
+            modified,
+        )
+        result.fixes_committed += len(applied_edits) + len(fix.creates)
+        result.issues_fixed.append(fix.assessment[:100])
+
+        if self._on_round_end:
+            self._on_round_end(0, True, False)
+
+        logger.info(
+            "Direct fix committed: %d edits, health %s→%s, issues %d→%d",
+            len(applied_edits),
+            observation.health.name, new_observation.health.name,
+            observation.issue_count, new_observation.issue_count,
+        )
+        return new_observation
+
+    def _collect_affected_files(
+        self, observation: Observation,
+    ) -> list[dict[str, str]]:
+        """Read the source files mentioned in errors.
+
+        Follows the error traceback to find affected files, then
+        reads their imports too. Returns file contents for the
+        FixAgent to reason about.
+        """
+        # Collect file paths from issues
+        paths: set[str] = set()
+        for issue in observation.issues:
+            if issue.file_path:
+                paths.add(issue.file_path)
+            for rp in issue.related_file_paths:
+                paths.add(rp)
+
+        # Also parse the raw build output for Python tracebacks
+        import re
+        raw = observation.build_output or observation.test_output or ""
+        for match in re.finditer(r'File "([^"]+)"', raw):
+            fpath = match.group(1)
+            # Make relative to project root
+            if fpath.startswith(self._root):
+                fpath = fpath[len(self._root):].lstrip("/")
+            if not fpath.startswith("/"):
+                paths.add(fpath)
+
+        # TypeScript errors
+        for match in re.finditer(
+            r"([^\s:(]+\.(?:ts|tsx|js|jsx))\(?\d", raw,
+        ):
+            paths.add(match.group(1))
+
+        # Resolve and read files
+        files: list[dict[str, str]] = []
+        seen: set[str] = set()
+        total_chars = 0
+        max_total = 30000  # Cap total content
+
+        for path in paths:
+            file_path, resolved = self._resolve_file_path(path)
+            if resolved in seen or not file_path.is_file():
+                continue
+            seen.add(resolved)
+            try:
+                content = file_path.read_text(encoding="utf-8")
+                if total_chars + len(content) > max_total:
+                    if len(content) > 3000:
+                        content = content[:3000] + "\n[truncated]"
+                total_chars += len(content)
+                # Detect language from extension
+                ext = file_path.suffix
+                lang_map = {
+                    ".py": "python", ".ts": "typescript", ".tsx": "tsx",
+                    ".js": "javascript", ".jsx": "jsx", ".rs": "rust",
+                    ".go": "go",
+                }
+                files.append({
+                    "path": resolved,
+                    "content": content,
+                    "language": lang_map.get(ext, ""),
+                })
+            except (OSError, UnicodeDecodeError):
+                pass
+
+            # Also read this file's imports
+            if total_chars < max_total:
+                for imp in self._read_imports(
+                    files[-1]["content"], resolved,
+                ):
+                    if imp["path"] not in seen:
+                        seen.add(imp["path"])
+                        total_chars += len(imp.get("content", ""))
+                        ext = Path(imp["path"]).suffix
+                        files.append({
+                            "path": imp["path"],
+                            "content": imp.get("content", ""),
+                            "language": lang_map.get(ext, ""),
+                        })
+                        if total_chars > max_total:
+                            break
+
+        return files
 
     async def _try_batch_fix(
         self,
