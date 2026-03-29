@@ -357,11 +357,6 @@ class Refiner:
         snapshot = await self._snapshots.take("batch fix attempt")
 
         # Fix every file the analyser identified
-        # First, collect all error file paths for cross-referencing
-        all_error_paths = {
-            e.file_path for e in analysis.errors if e.file_path
-        }
-
         fixed_files: list[str] = []
         for error in analysis.errors:
             if not error.file_path or not error.suggested_fix:
@@ -373,27 +368,20 @@ class Refiner:
 
             source = file_path.read_text(encoding="utf-8")
 
-            # Build rich context — imports + other files from the analysis
+            # Only include files this specific file imports — not
+            # every file from the analysis. Keeps context tight.
             related = self._read_imports(source, resolved)
-            seen_paths = {r["path"] for r in related}
-            for other_path in all_error_paths:
-                if other_path == error.file_path or other_path in seen_paths:
-                    continue
-                other_resolved, other_resolved_path = self._resolve_file_path(
-                    other_path,
-                )
-                if other_resolved.is_file() and other_resolved_path not in seen_paths:
-                    try:
-                        content = other_resolved.read_text(encoding="utf-8")
-                        if len(content) > 6000:
-                            content = content[:6000] + "\n[truncated]"
-                        related.append({
-                            "path": other_resolved_path,
-                            "content": content,
-                        })
-                        seen_paths.add(other_resolved_path)
-                    except (OSError, UnicodeDecodeError):
-                        pass
+
+            # Cap total related content to ~8k chars
+            total_chars = 0
+            capped: list[dict] = []
+            for rf in related:
+                content_len = len(rf.get("content", ""))
+                if total_chars + content_len > 8000:
+                    break
+                capped.append(rf)
+                total_chars += content_len
+            related = capped
 
             repair_spec = RepairSpec(
                 instruction=error.suggested_fix,
@@ -629,7 +617,8 @@ class Refiner:
 
         source_code = file_path.read_text(encoding="utf-8")
 
-        # Build rich context: imports + files the Opus analysis said are related
+        # Build context: imports + files the Opus analysis said are related
+        # Cap total related content to ~8k chars to avoid bloat
         related_files = self._read_imports(source_code, resolved_path)
 
         # Add files from the Opus analysis that aren't already in related
@@ -641,8 +630,8 @@ class Refiner:
             if resolved_rel.is_file():
                 try:
                     content = resolved_rel.read_text(encoding="utf-8")
-                    if len(content) > 8000:
-                        content = content[:8000] + "\n[truncated]"
+                    if len(content) > 4000:
+                        content = content[:4000] + "\n[truncated]"
                     related_files.append({
                         "path": resolved_rel_path,
                         "content": content,
@@ -650,6 +639,17 @@ class Refiner:
                     seen_paths.add(resolved_rel_path)
                 except (OSError, UnicodeDecodeError):
                     pass
+
+        # Cap total related content
+        total_chars = 0
+        capped: list[dict] = []
+        for rf in related_files:
+            content_len = len(rf.get("content", ""))
+            if total_chars + content_len > 8000:
+                break
+            capped.append(rf)
+            total_chars += content_len
+        related_files = capped
 
         # Use the Opus suggested fix directly — don't re-diagnose
         instruction = issue.suggested_fix or issue.summary
