@@ -42,6 +42,11 @@ For Python projects:
 - If neither works (e.g., Python version constraint), install packages individually: `pip install fastapi sqlalchemy ...`
 - NEVER prescribe `pip install -r requirements.txt` if the file doesn't exist
 - If pyproject.toml has `requires-python = ">=3.12"` but the environment has 3.11, either relax the constraint or install deps individually
+
+CRITICAL for Python ModuleNotFoundError:
+- Distinguish between MISSING THIRD-PARTY PACKAGES (e.g., `No module named 'fastapi'`) and WRONG INTERNAL IMPORT PATHS (e.g., `No module named 'app.core'`).
+- Check the file listing: if the error says `No module named 'app.core'` but the file listing shows `app/config/settings.py` exists and NO `app/core/` directory exists, this is a WRONG IMPORT PATH, not a missing package. The fix is to change the import in the source file, not to install anything.
+- Only prescribe pip install for actual third-party packages (fastapi, sqlalchemy, etc.), never for internal project modules.
 {% endif %}
 
 ## Instructions
