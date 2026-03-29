@@ -94,21 +94,19 @@ class Observation:
     def is_worse_than(self, other: Observation) -> bool:
         """Is this observation strictly worse?
 
-        Worse if:
-        - Health level dropped (always bad)
-        - Issue count more than doubled at the same health level
-          (the fix introduced many new problems)
+        Worse ONLY if health level dropped. Issue count changes at
+        the same health level are NOT considered worse — they often
+        mean we fixed a blocker and uncovered real errors underneath.
 
-        A small increase at the same level is tolerated — we may
-        have uncovered real errors by fixing a blocker. But 18 → 55
-        means the fix itself was broken.
+        Examples:
+        - TESTS_FAILING(1) → TESTS_FAILING(5): NOT worse. We fixed
+          a setup crash and now see individual test failures.
+        - TESTS_FAILING(18) → TESTS_FAILING(55): NOT worse. The
+          analyser may just be counting differently.
+        - TESTS_FAILING → DOES_NOT_BUILD: WORSE. Health dropped.
         """
         if self.health < other.health:
             return True
-        if self.health == other.health and other.issue_count > 0:
-            # More than doubled = the fix introduced problems
-            if self.issue_count > other.issue_count * 2:
-                return True
         return False
 
 
