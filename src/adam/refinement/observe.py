@@ -119,6 +119,7 @@ class Observer:
         self._runner = runner or ShellRunner()
         self._llm = llm  # LLMClient, if available — enables Opus build analysis
         self._setup_commands_ran = False
+        self._any_setup_succeeded = False
 
     async def observe(
         self,
@@ -237,6 +238,7 @@ class Observer:
 
             # Execute any setup commands first (npm install, etc.)
             if analysis.commands_to_run:
+                self._any_setup_succeeded = False
                 for cmd in analysis.commands_to_run:
                     if not cmd.command:
                         continue
@@ -252,6 +254,7 @@ class Observer:
                     )
                     if cmd_result.success:
                         logger.info("Setup command succeeded: %s", cmd.command)
+                        self._any_setup_succeeded = True
                     elif (
                         "npm install" in cmd.command
                         and "ERESOLVE" in cmd_result.output
@@ -269,6 +272,7 @@ class Observer:
                         )
                         if cmd_result.success:
                             logger.info("Setup command succeeded with --legacy-peer-deps")
+                            self._any_setup_succeeded = True
                         else:
                             logger.warning(
                                 "Setup command still failed: %s",
@@ -280,20 +284,30 @@ class Observer:
                             cmd.command, cmd_result.output[:200],
                         )
 
-                # Re-run the build to see if commands fixed it
-                recheck = await self._runner.run_build(command, cwd=self._root)
-                if recheck.success:
-                    logger.info("Build passes after running setup commands")
-                    return []  # No issues — commands fixed it
-                # Update output and re-analyse the NEW errors
-                # (don't return the old "tsc not found" errors)
-                output = recheck.output
-                logger.info(
-                    "Setup commands ran but build still fails — "
-                    "re-analysing new errors"
-                )
-                # Mark that we ran commands (affects is_worse_than logic)
-                self._setup_commands_ran = True
+                # Only mark as ran if at least one command succeeded
+                if not self._any_setup_succeeded:
+                    # No commands succeeded — don't mark as ran
+                    logger.info(
+                        "All setup commands failed — not marking as progress"
+                    )
+                else:
+                    # Re-run the build to see if commands fixed it
+                    recheck = await self._runner.run_build(
+                        command, cwd=self._root,
+                    )
+                    if recheck.success:
+                        logger.info(
+                            "Build passes after running setup commands"
+                        )
+                        return []  # No issues — commands fixed it
+                    # Update output and re-analyse the NEW errors
+                    output = recheck.output
+                    logger.info(
+                        "Setup commands ran but build still fails — "
+                        "re-analysing new errors"
+                    )
+                    # Mark that we ran commands (affects is_worse_than logic)
+                    self._setup_commands_ran = True
 
             for error in analysis.errors:
                 key = f"{error.file_path}:{error.line_number}:{error.summary}"

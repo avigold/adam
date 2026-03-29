@@ -743,9 +743,11 @@ def _detect_project_commands(project_dir: Path) -> tuple[str, str, str]:
             if init.is_file() or main.is_file():
                 module = pkg_dir
                 # Check for a main.py that can be import-tested
+                # Use cd back to root to ensure correct working directory
                 if main.is_file():
                     commands.append(
-                        f"python -c \"import {module}.main\""
+                        f"cd {project_dir} && "
+                        f"PYTHONPATH=. python -c \"import {module}.main\""
                     )
                 break
         if not test_cmds:
