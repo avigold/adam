@@ -357,6 +357,11 @@ class Refiner:
         snapshot = await self._snapshots.take("batch fix attempt")
 
         # Fix every file the analyser identified
+        # First, collect all error file paths for cross-referencing
+        all_error_paths = {
+            e.file_path for e in analysis.errors if e.file_path
+        }
+
         fixed_files: list[str] = []
         for error in analysis.errors:
             if not error.file_path or not error.suggested_fix:
@@ -368,11 +373,36 @@ class Refiner:
 
             source = file_path.read_text(encoding="utf-8")
 
+            # Build rich context — imports + other files from the analysis
+            related = self._read_imports(source, resolved)
+            seen_paths = {r["path"] for r in related}
+            for other_path in all_error_paths:
+                if other_path == error.file_path or other_path in seen_paths:
+                    continue
+                other_resolved, other_resolved_path = self._resolve_file_path(
+                    other_path,
+                )
+                if other_resolved.is_file() and other_resolved_path not in seen_paths:
+                    try:
+                        content = other_resolved.read_text(encoding="utf-8")
+                        if len(content) > 6000:
+                            content = content[:6000] + "\n[truncated]"
+                        related.append({
+                            "path": other_resolved_path,
+                            "content": content,
+                        })
+                        seen_paths.add(other_resolved_path)
+                    except (OSError, UnicodeDecodeError):
+                        pass
+
             repair_spec = RepairSpec(
                 instruction=error.suggested_fix,
                 diagnosis=error.root_cause or error.summary,
+                preserve_constraints=[
+                    "Match the interfaces of the imported/referenced files "
+                    "shown in Related Files — those are the source of truth",
+                ],
             )
-            related = self._read_imports(source, resolved)
 
             agent = RepairAgent(
                 llm=self._llm,
@@ -576,36 +606,58 @@ class Refiner:
         issue: Issue,
         observation: Observation,
     ) -> list[str]:
-        """Fix an issue in a known file."""
+        """Fix an issue in a known file.
+
+        Uses the Opus analysis directly — the issue already carries
+        the suggested fix and related file paths from the build
+        analyser. No re-diagnosis needed. The repair agent gets:
+        1. The source file to fix
+        2. The precise instruction from Opus
+        3. The actual source code of referenced files (imports, callees)
+        """
         file_path, resolved_path = self._resolve_file_path(issue.file_path)
         if not file_path.is_file():
             logger.warning("Issue file not found: %s", issue.file_path)
             return []
-        # Update the issue's file_path to the resolved version
         issue.file_path = resolved_path
 
         source_code = file_path.read_text(encoding="utf-8")
 
-        # Read imports to give repair agent context
-        related_files = self._read_imports(source_code, issue.file_path)
+        # Build rich context: imports + files the Opus analysis said are related
+        related_files = self._read_imports(source_code, resolved_path)
 
-        # Determine tier — escalate to Opus for architectural issues
-        use_opus = (
-            self._config.escalate_to_opus
-            and issue.level <= HealthLevel.BUILDS_BUT_CRASHES
-            and len(related_files) > 2
-        )
+        # Add files from the Opus analysis that aren't already in related
+        seen_paths = {r["path"] for r in related_files}
+        for rel_path in issue.related_file_paths:
+            if rel_path in seen_paths:
+                continue
+            resolved_rel, resolved_rel_path = self._resolve_file_path(rel_path)
+            if resolved_rel.is_file():
+                try:
+                    content = resolved_rel.read_text(encoding="utf-8")
+                    if len(content) > 8000:
+                        content = content[:8000] + "\n[truncated]"
+                    related_files.append({
+                        "path": resolved_rel_path,
+                        "content": content,
+                    })
+                    seen_paths.add(resolved_rel_path)
+                except (OSError, UnicodeDecodeError):
+                    pass
 
-        # Diagnose
-        diagnosis = await self._diagnose(issue, related_files)
+        # Use the Opus suggested fix directly — don't re-diagnose
+        instruction = issue.suggested_fix or issue.summary
+        diagnosis_text = issue.error_output or issue.summary
 
-        # Repair
         repair_spec = RepairSpec(
-            instruction=diagnosis.get("proposed_fix", issue.summary),
-            diagnosis=diagnosis.get("root_cause", issue.summary),
+            instruction=instruction,
+            diagnosis=diagnosis_text,
             preserve_constraints=[
-                "Do not change the public API or exports",
+                "Do not change the public API or exports unless the "
+                "fix specifically requires it",
                 "Do not add new dependencies",
+                "Match the interfaces of the imported/referenced files "
+                "shown in Related Files — those are the source of truth",
             ],
         )
 
@@ -614,72 +666,29 @@ class Refiner:
             source_code=source_code,
             repair_spec=repair_spec,
         )
-        if use_opus:
-            agent.model_tier = ModelTier.OPUS
 
         context = AgentContext(
             error_output=issue.error_output or observation.build_output,
             related_files=related_files,
-            file_spec={"path": issue.file_path},
+            file_spec={"path": resolved_path},
         )
 
-        result = await agent.execute(context)
+        from adam.cli.display import thinking
+        async with thinking(f"Repairing {resolved_path}"):
+            result = await agent.execute(context)
+
         if not result.success or not result.raw_response:
             logger.warning("Repair agent failed: %s", result.error)
             return []
 
-        # Extract the fixed code from the response
         fixed_code = self._extract_code(result.raw_response)
         if not fixed_code or fixed_code.strip() == source_code.strip():
             logger.info("Repair produced no changes")
             return []
 
-        # Write the fix
         file_path.write_text(fixed_code, encoding="utf-8")
-        logger.info("Wrote fix to %s", issue.file_path)
-
-        # If the diagnosis identified other affected files, try those too
-        affected = diagnosis.get("affected_files", [])
-        modified = [issue.file_path]
-
-        for other_path in affected:
-            if other_path == issue.file_path:
-                continue
-            other_file = Path(self._root) / other_path
-            if not other_file.is_file():
-                continue
-
-            other_source = other_file.read_text(encoding="utf-8")
-            other_related = self._read_imports(other_source, other_path)
-
-            other_agent = RepairAgent(
-                llm=self._llm,
-                source_code=other_source,
-                repair_spec=RepairSpec(
-                    instruction=(
-                        f"This file is affected by a fix in {issue.file_path}. "
-                        f"Root cause: {diagnosis.get('root_cause', '')}. "
-                        f"Ensure this file is consistent with the fix."
-                    ),
-                    diagnosis=diagnosis.get("root_cause", ""),
-                ),
-            )
-
-            other_ctx = AgentContext(
-                error_output=issue.error_output,
-                related_files=other_related,
-                file_spec={"path": other_path},
-            )
-
-            other_result = await other_agent.execute(other_ctx)
-            if other_result.success and other_result.raw_response:
-                other_fixed = self._extract_code(other_result.raw_response)
-                if other_fixed and other_fixed.strip() != other_source.strip():
-                    other_file.write_text(other_fixed, encoding="utf-8")
-                    modified.append(other_path)
-                    logger.info("Also fixed: %s", other_path)
-
-        return modified
+        logger.info("Wrote fix to %s", resolved_path)
+        return [resolved_path]
 
     async def _fix_unknown_location(
         self,

@@ -36,6 +36,8 @@ class Issue:
     file_path: str = ""  # specific file, if known
     error_output: str = ""  # raw error text
     line_number: int = 0
+    suggested_fix: str = ""  # from Opus analysis — precise repair instruction
+    related_file_paths: list[str] = field(default_factory=list)  # files the fix needs to see
 
 
 @dataclass
@@ -309,17 +311,38 @@ class Observer:
                     # Mark that we ran commands (affects is_worse_than logic)
                     self._setup_commands_ran = True
 
+            # Build a map of which files reference which other files
+            # so the repair agent gets the full picture
+            all_error_files = {e.file_path for e in analysis.errors if e.file_path}
+
             for error in analysis.errors:
                 key = f"{error.file_path}:{error.line_number}:{error.summary}"
                 if key in seen:
                     continue
                 seen.add(key)
+
+                # Identify related files from the analysis — other files
+                # mentioned in the same error cluster
+                related = [
+                    e.file_path for e in analysis.errors
+                    if e.file_path and e.file_path != error.file_path
+                ]
+                # Deduplicate while preserving order
+                seen_related: set[str] = set()
+                unique_related: list[str] = []
+                for r in related:
+                    if r not in seen_related:
+                        seen_related.add(r)
+                        unique_related.append(r)
+
                 issues.append(Issue(
                     level=level,
                     summary=error.suggested_fix or error.summary,
                     file_path=error.file_path,
                     error_output=error.root_cause or error.summary,
                     line_number=error.line_number,
+                    suggested_fix=error.suggested_fix,
+                    related_file_paths=unique_related[:5],
                 ))
 
             if not issues and output.strip():
