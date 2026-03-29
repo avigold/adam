@@ -67,3 +67,4 @@ def setup_logging(
         logging.INFO if debug else logging.WARNING
     )
     logging.getLogger("asyncio").setLevel(logging.WARNING)
+    logging.getLogger("aiosqlite").setLevel(logging.WARNING)
